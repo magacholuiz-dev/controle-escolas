@@ -29,7 +29,7 @@ Status **Proposta** = recomendação nossa, confirmar na REFINEMENT. **ABERTA** 
 ## Critérios de aceite
 - [ ] AC1 — Atrasar o repasse 2 meses mantém o lucro anual e piora o saldo mínimo *(verificar: teste `AC1` no cálculo)*
 - [ ] AC2 — Cenário sem ajustes devolve exatamente o resultado da base *(verificar: teste `AC2`)*
-- [ ] AC3 — Demitir um colaborador em junho inclui o custo da rescisão nesse mês e tira o salário dos seguintes *(verificar: teste `AC3` com `rescisao.js`)*
+- [ ] AC3 — Demitir um colaborador em junho inclui o custo da rescisão nesse mês e tira o salário dos seguintes *(verificar: teste `AC3` com `severance.js`)*
 - [ ] AC4 — Salvar, reabrir e apagar um cenário não altera nenhum documento real *(verificar: teste `AC4` comparando as coleções antes e depois)*
 - [ ] AC5 — A tela mostra base x cenário com a diferença do saldo mínimo em R$ *(verificar: navegador)*
 

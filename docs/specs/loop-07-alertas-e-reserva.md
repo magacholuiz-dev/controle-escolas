@@ -37,7 +37,7 @@ Status **Proposta** = recomendação nossa, confirmar na REFINEMENT. **ABERTA** 
 
 ## Notas de design
 - `alertas.js` puro: `gerarAlertas({ relatorio, funcionarios, contas, mensalidades, hoje })` devolve `[{ nivel, titulo, detalhe, acao }]`.
-- Reserva reusa `calcularRescisao` para o cenário "todos saem hoje sem justa causa".
+- Reserva reusa `calculateSeverance` para o cenário "todos saem hoje sem justa causa".
 
 ## Configuração
 `rotatividade_pct` por escola (em Parâmetros).

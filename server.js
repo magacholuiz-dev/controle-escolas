@@ -1,27 +1,58 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
-import { conectar, garantirCalendario, Calendario, Escola, Funcionario, Receita, Despesa, Lancamento } from './db.js';
-import { calcularEscola, consolidar } from './calc.js';
-import { calcularRescisao, TIPOS_RESCISAO } from './rescisao.js';
-import { ratear } from './rateio.js';
+import { connect, ensureCalendar, Calendar, School, Employee, Revenue, Expense, Entry, Supplier, Bill, Child, Tuition } from './db.js';
+import { calculateSchool, consolidate } from './calc.js';
+import { calculateSeverance, SEVERANCE_TYPES } from './severance.js';
+import { prorate } from './proration.js';
+import { billStatus, generateMonthBills, dueSummary } from './bills.js';
+import { validateChild, occupancy } from './children.js';
+import { calculateCharge, generateMonthTuition, overdueBracket, delinquency, chargeMessage } from './tuition.js';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import mongoose from 'mongoose';
-import { ErroEntrada, mensagemDeValidacao } from './erros.js';
+import { InputError, validationMessage } from './errors.js';
 
 const PORT = Number(process.env.PORT) || 3200;
-const HOST = process.env.LISTEN_HOST || '127.0.0.1'; // só este computador, até existir login (Loop 8)
-const MAX_CORPO = 1024 * 1024;
+const HOST = process.env.LISTEN_HOST || '127.0.0.1'; // this machine only, until there's a login (Loop 8)
+const MAX_BODY = 1024 * 1024;
 const PUBLIC = new URL('./public', import.meta.url).pathname;
 
-// Recursos com CRUD genérico. `cols` é a lista branca de campos graváveis.
-const RECURSOS = {
-  funcionarios: { model: Funcionario, cols: ['escola_id', 'nome', 'cargo', 'cpf', 'salario', 'beneficios', 'data_admissao', 'data_desligamento', 'ferias_periodos_gozados', 'fgts_saldo', 'mes_ferias', 'ativo'] },
-  receitas: { model: Receita, cols: ['escola_id', 'descricao', 'valor_mensal', 'segue_calendario'] },
-  despesas: { model: Despesa, cols: ['escola_id', 'descricao', 'categoria', 'valor_mensal', 'segue_calendario'] },
-  lancamentos: { model: Lancamento, cols: ['escola_id', 'data', 'tipo', 'categoria', 'descricao', 'valor', 'avulso'] },
-  escolas: { model: Escola, cols: ['nome', 'encargos_pct', 'imposto_pct', 'saldo_inicial', 'mes_ferias', 'criancas'] },
+// Resources with a generic CRUD. `cols` is the whitelist of writable fields.
+const RESOURCES = {
+  employees: { model: Employee, cols: ['school_id', 'name', 'role', 'cpf', 'salary', 'benefits', 'hire_date', 'termination_date', 'vacation_periods_taken', 'fgts_balance', 'vacation_month', 'active'] },
+  revenues: { model: Revenue, cols: ['school_id', 'description', 'monthly_amount', 'follows_calendar'] },
+  expenses: { model: Expense, cols: ['school_id', 'description', 'category', 'monthly_amount', 'follows_calendar', 'due_day'] },
+  entries: { model: Entry, cols: ['school_id', 'date', 'type', 'category', 'description', 'amount', 'one_off'] },
+  schools: { model: School, cols: ['name', 'payroll_tax_pct', 'tax_pct', 'initial_balance', 'vacation_month', 'children_count', 'capacity', 'child_daily_rate', 'tuition_due_day'] },
+  children: {
+    model: Child,
+    cols: ['school_id', 'name', 'birth_date', 'classroom', 'guardian_name', 'guardian_phone', 'enrollment_type', 'tuition_amount', 'enrollment_date', 'exit_date'],
+    validate: async (data, existing) => validateChild({
+      enrollment_date: 'enrollment_date' in data ? data.enrollment_date : existing?.enrollment_date,
+      exit_date: 'exit_date' in data ? data.exit_date : existing?.exit_date,
+    }),
+  },
+  tuition: {
+    model: Tuition,
+    cols: ['school_id', 'child_id', 'period', 'base_amount', 'discount', 'due_date'],
+    validate: async (data) => {
+      if (data.child_id) {
+        requireId(data.child_id, 'child_id');
+        if (!(await Child.exists({ _id: data.child_id }))) throw new InputError('criança não encontrada');
+      }
+    },
+  },
+  suppliers: { model: Supplier, cols: ['name', 'tax_id', 'contact'] },
+  bills: {
+    model: Bill, cols: ['school_id', 'supplier_id', 'description', 'category', 'period', 'due_date', 'amount'],
+    validate: async (data) => {
+      if (data.supplier_id) {
+        requireId(data.supplier_id, 'supplier_id');
+        if (!(await Supplier.exists({ _id: data.supplier_id }))) throw new InputError('fornecedor não encontrado');
+      }
+    },
+  },
 };
 
 const json = (res, status, body) => {
@@ -29,190 +60,359 @@ const json = (res, status, body) => {
   res.end(JSON.stringify(body));
 };
 
-const lerCorpo = (req) => new Promise((resolve, reject) => {
+const readBody = (req) => new Promise((resolve, reject) => {
   let raw = '';
-  let estourou = false;
+  let tooBig = false;
   req.on('data', (c) => {
-    if (estourou) return; // continua drenando o corpo para poder responder 413
+    if (tooBig) return; // keep draining the body so we can still respond 413
     raw += c;
-    if (raw.length > MAX_CORPO) { estourou = true; raw = ''; reject(new ErroEntrada('corpo da requisição grande demais', 413)); }
+    if (raw.length > MAX_BODY) { tooBig = true; raw = ''; reject(new InputError('corpo da requisição grande demais', 413)); }
   });
   req.on('end', () => {
-    if (estourou) return;
+    if (tooBig) return;
     if (!raw) return resolve({});
     try {
-      const corpo = JSON.parse(raw);
-      if (corpo === null || typeof corpo !== 'object' || Array.isArray(corpo)) throw new Error();
-      resolve(corpo);
-    } catch { reject(new ErroEntrada('corpo da requisição não é um JSON de objeto válido')); }
+      const body = JSON.parse(raw);
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new Error();
+      resolve(body);
+    } catch { reject(new InputError('corpo da requisição não é um JSON de objeto válido')); }
   });
 });
 
-// Validações de parâmetros de rota/consulta.
-const exigirId = (v, nome = 'id') => {
-  if (!mongoose.isValidObjectId(v) || String(v).length !== 24) throw new ErroEntrada(`${nome} inválido`);
+// Route/query parameter validation.
+const requireId = (v, name = 'id') => {
+  if (!mongoose.isValidObjectId(v) || String(v).length !== 24) throw new InputError(`${name} inválido`);
   return v;
 };
-const exigirAno = (v) => {
+const requireYear = (v) => {
   const n = Number(v);
-  if (!Number.isInteger(n) || n < 2000 || n > 2100) throw new ErroEntrada('ano inválido (use um ano entre 2000 e 2100)');
+  if (!Number.isInteger(n) || n < 2000 || n > 2100) throw new InputError('ano inválido (use um ano entre 2000 e 2100)');
   return n;
 };
 
-function limpar(cols, body) {
+function pickFields(cols, body) {
   const out = {};
   for (const c of cols) if (c in body) out[c] = body[c] === '' ? null : body[c];
   return out;
 }
 
-async function relatorio(ano, escolaParam) {
-  if (escolaParam !== 'todas') exigirId(escolaParam, 'escola');
-  const escolas = await (escolaParam === 'todas' ? Escola.find().sort('_id') : Escola.find({ _id: escolaParam })).lean();
-  const resultados = await Promise.all(escolas.map(async (escola) => {
-    await garantirCalendario(escola._id, ano);
-    const [funcionarios, receitas, despesas, cal, lancamentos] = await Promise.all([
-      Funcionario.find({ escola_id: escola._id }).lean(),
-      Receita.find({ escola_id: escola._id }).lean(),
-      Despesa.find({ escola_id: escola._id }).lean(),
-      Calendario.find({ escola_id: escola._id, ano }).sort('mes').lean(),
-      Lancamento.find({ escola_id: escola._id, data: { $regex: `^${ano}-` } }).lean(),
+async function buildReport(year, schoolParam) {
+  if (schoolParam !== 'all') requireId(schoolParam, 'school');
+  const schools = await (schoolParam === 'all' ? School.find().sort('_id') : School.find({ _id: schoolParam })).lean();
+  const results = await Promise.all(schools.map(async (school) => {
+    await ensureCalendar(school._id, year);
+    const [employees, revenues, expenses, cal, entries, children] = await Promise.all([
+      Employee.find({ school_id: school._id }).lean(),
+      Revenue.find({ school_id: school._id }).lean(),
+      Expense.find({ school_id: school._id }).lean(),
+      Calendar.find({ school_id: school._id, year }).sort('month').lean(),
+      Entry.find({ school_id: school._id, date: { $regex: `^${year}-` } }).lean(),
+      Child.find({ school_id: school._id }).lean(),
     ]);
-    return calcularEscola({ escola, funcionarios, receitas, despesas, fatores: cal.map((c) => c.fator), fechados: cal.map((c) => c.fechado), lancamentos, ano });
+    return calculateSchool({
+      school, employees, revenues, expenses, factors: cal.map((c) => c.factor), closedMonths: cal.map((c) => c.closed),
+      entries, year, children, schoolDays: cal.map((c) => c.school_days),
+    });
   }));
-  if (escolaParam !== 'todas') return resultados[0];
-  return { ...consolidar(resultados, escolas.reduce((s, e) => s + e.saldo_inicial, 0)), porEscola: escolas.map((e, i) => ({ id: String(e._id), nome: e.nome, ...resultados[i].totais })) };
+  if (schoolParam !== 'all') return results[0];
+  return { ...consolidate(results, schools.reduce((s, e) => s + e.initial_balance, 0)), bySchool: schools.map((e, i) => ({ id: String(e._id), name: e.name, ...results[i].totals })) };
 }
 
-// Cria uma despesa/lançamento por escola, com o valor dividido, ligados por `grupo_id`.
-async function dividir({ recurso, dados, modo, pcts }) {
-  const def = RECURSOS[recurso];
-  if (!def || !['despesas', 'lancamentos'].includes(recurso)) throw new ErroEntrada('só despesas e lançamentos podem ser divididos');
-  if (!dados || typeof dados !== 'object') throw new ErroEntrada('dados da divisão ausentes');
-  const campoValor = recurso === 'despesas' ? 'valor_mensal' : 'valor';
-  const escolas = (await Escola.find().sort('_id').lean()).map((e) => ({ id: String(e._id), criancas: e.criancas }));
-  const partes = ratear(Number(dados[campoValor]), escolas, modo, pcts);
-  const grupo_id = randomUUID();
-  const base = limpar(def.cols, dados);
-  const docs = await def.model.create(partes.filter((p) => p.valor > 0).map((p) => ({
-    ...base, escola_id: p.escola_id, [campoValor]: p.valor, grupo_id, valor_total: Number(dados[campoValor]), rateio_pct: p.pct,
+// Creates one expense/entry per school, with the amount split, linked by `group_id`.
+async function splitAmount({ resource, data, mode, percentages }) {
+  const resourceDef = RESOURCES[resource];
+  if (!resourceDef || !['expenses', 'entries', 'bills'].includes(resource)) throw new InputError('só despesas, lançamentos e contas podem ser divididos');
+  if (!data || typeof data !== 'object') throw new InputError('dados da divisão ausentes');
+  await resourceDef.validate?.(data);
+  const amountField = resource === 'expenses' ? 'monthly_amount' : 'amount';
+  const schools = (await School.find().sort('_id').lean()).map((e) => ({ id: String(e._id), children_count: e.children_count }));
+  const splits = prorate(Number(data[amountField]), schools, mode, percentages);
+  const group_id = randomUUID();
+  const base = pickFields(resourceDef.cols, data);
+  const docs = await resourceDef.model.create(splits.filter((p) => p.amount > 0).map((p) => ({
+    ...base, school_id: p.school_id, [amountField]: p.amount, group_id, total_amount: Number(data[amountField]), split_pct: p.pct,
   })));
-  return { grupo_id, partes, ids: docs.map((d) => String(d._id)) };
+  return { group_id, splits, ids: docs.map((d) => String(d._id)) };
 }
 
-async function dadosRescisao(q) {
-  const f = await Funcionario.findById(exigirId(q.get('funcionario_id'), 'funcionario_id')).lean();
-  if (!f) throw new ErroEntrada('colaborador não encontrado', 404);
-  if (!f.data_admissao) throw new ErroEntrada('cadastre a data de admissão do colaborador');
-  return { f, entrada: {
-    salario: f.salario, data_admissao: f.data_admissao, data_rescisao: q.get('data'), tipo: q.get('tipo'),
-    aviso: q.get('aviso') || 'indenizado', aviso_cumprido: q.get('aviso_cumprido') !== '0',
-    ferias_periodos_gozados: f.ferias_periodos_gozados || 0, fgts_saldo: f.fgts_saldo,
+// Generates the month's bills for a school from its recurring expenses. Idempotent: expenses that
+// already have a bill for this period (unique expense_id+period index) are silently skipped.
+async function generateBills({ school_id, period }) {
+  requireId(school_id, 'school_id');
+  if (!/^\d{4}-\d{2}$/.test(period || '')) throw new InputError('competencia inválida (use AAAA-MM)');
+  const expenses = await Expense.find({ school_id }).lean();
+  const candidates = generateMonthBills(expenses, period);
+  if (!candidates.length) return { created: 0 };
+  const existing = new Set((await Bill.find({ school_id, period }).select('expense_id').lean()).map((c) => String(c.expense_id)));
+  const fresh = candidates.filter((c) => !existing.has(String(c.expense_id)));
+  if (fresh.length) await Bill.insertMany(fresh, { ordered: false });
+  return { created: fresh.length };
+}
+
+async function payBill(id, { amount_paid, paid_at, payment_method }) {
+  const bill = await Bill.findById(id);
+  if (!bill) throw new InputError('conta não encontrada', 404);
+  if (bill.paid_at) throw new InputError('esta conta já está paga');
+  const amount = Number(amount_paid ?? bill.amount);
+  if (!(amount > 0)) throw new InputError('valor pago deve ser maior que zero');
+  const date = paid_at || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new InputError('paid_at inválido (use AAAA-MM-DD)');
+  const entry = await Entry.create({
+    school_id: bill.school_id, date, type: 'expense', category: bill.category, one_off: 0,
+    description: bill.description, amount, bill_id: bill._id,
+  });
+  bill.paid_at = date; bill.amount_paid = amount; bill.payment_method = payment_method || '';
+  await bill.save();
+  return { ok: true, entry_id: String(entry._id) };
+}
+
+async function undoBillPayment(id) {
+  const bill = await Bill.findById(id);
+  if (!bill) throw new InputError('conta não encontrada', 404);
+  if (!bill.paid_at) throw new InputError('esta conta não está paga');
+  await Entry.deleteOne({ bill_id: bill._id });
+  bill.paid_at = null; bill.amount_paid = null; bill.payment_method = '';
+  await bill.save();
+  return { ok: true };
+}
+
+async function billsPanel(schoolParam, days) {
+  const filter = schoolParam === 'all' ? {} : { school_id: requireId(schoolParam, 'school') };
+  const [bills, schools] = await Promise.all([Bill.find(filter).lean(), School.find().select('name').lean()]);
+  const names = new Map(schools.map((e) => [String(e._id), e.name]));
+  const today = new Date().toISOString().slice(0, 10);
+  const r = dueSummary(bills, today, days);
+  const withSchoolName = (b) => ({ ...b, id: String(b._id), school: names.get(String(b.school_id)) });
+  return { today, totalOverdue: r.totalOverdue, totalUpcoming: r.totalUpcoming, overdue: r.overdue.map(withSchoolName), upcoming: r.upcoming.map(withSchoolName) };
+}
+
+// Generates the month's tuition charges for a school, from its privately-funded children. Idempotent:
+// tries to insert all of them and ignores the ones that already exist (unique child_id+period index).
+async function generateTuition({ school_id, period }) {
+  requireId(school_id, 'school_id');
+  if (!/^\d{4}-\d{2}$/.test(period || '')) throw new InputError('competencia inválida (use AAAA-MM)');
+  const school = await School.findById(school_id).select('tuition_due_day').lean();
+  if (!school) throw new InputError('escola não encontrada', 404);
+  const children = await Child.find({ school_id }).lean();
+  const candidates = generateMonthTuition(children, period, school.tuition_due_day || 10);
+  if (!candidates.length) return { created: 0 };
+  const existing = new Set((await Tuition.find({ school_id, period }).select('child_id').lean()).map((t) => String(t.child_id)));
+  const fresh = candidates.filter((t) => !existing.has(String(t.child_id)));
+  if (fresh.length) await Tuition.insertMany(fresh, { ordered: false });
+  return { created: fresh.length };
+}
+
+async function payTuition(id, { amount_paid, paid_at, payment_method }) {
+  const charge = await Tuition.findById(id);
+  if (!charge) throw new InputError('mensalidade não encontrada', 404);
+  if (charge.paid_at) throw new InputError('esta mensalidade já está paga');
+  const amount = Number(amount_paid ?? calculateCharge(charge.base_amount, charge.discount));
+  if (!(amount > 0)) throw new InputError('valor pago deve ser maior que zero');
+  const date = paid_at || new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new InputError('paid_at inválido (use AAAA-MM-DD)');
+  const entry = await Entry.create({
+    school_id: charge.school_id, date, type: 'revenue', category: 'Mensalidades', one_off: 0,
+    description: `Mensalidade ${charge.period}`, amount, tuition_id: charge._id,
+  });
+  charge.paid_at = date; charge.amount_paid = amount; charge.payment_method = payment_method || '';
+  await charge.save();
+  return { ok: true, entry_id: String(entry._id) };
+}
+
+async function undoTuitionPayment(id) {
+  const charge = await Tuition.findById(id);
+  if (!charge) throw new InputError('mensalidade não encontrada', 404);
+  if (!charge.paid_at) throw new InputError('esta mensalidade não está paga');
+  await Entry.deleteOne({ tuition_id: charge._id });
+  charge.paid_at = null; charge.amount_paid = null; charge.payment_method = '';
+  await charge.save();
+  return { ok: true };
+}
+
+async function tuitionPanel(schoolParam) {
+  const schoolFilter = schoolParam === 'all' ? {} : { school_id: requireId(schoolParam, 'school') };
+  const [charges, schools, children] = await Promise.all([
+    Tuition.find(schoolFilter).lean(),
+    School.find().select('name').lean(),
+    Child.find().select('name guardian_name guardian_phone').lean(),
+  ]);
+  const schoolNames = new Map(schools.map((e) => [String(e._id), e.name]));
+  const childrenById = new Map(children.map((c) => [String(c._id), c]));
+  const today = new Date().toISOString().slice(0, 10);
+  const delinquencyInfo = delinquency(charges, today);
+  const debtors = charges
+    .filter((t) => !t.paid_at && t.due_date < today)
+    .map((t) => {
+      const child = childrenById.get(String(t.child_id)) || { name: '(criança removida)' };
+      return {
+        id: String(t._id), child: child.name, school: schoolNames.get(String(t.school_id)),
+        period: t.period, due_date: t.due_date, amount: calculateCharge(t.base_amount, t.discount),
+        bracket: overdueBracket(t.due_date, today, false),
+        message: chargeMessage(t, child, schoolNames.get(String(t.school_id)) || ''),
+      };
+    })
+    .sort((a, b) => a.due_date.localeCompare(b.due_date));
+  return { today, totalDue: delinquencyInfo.totalDue, totalOverdue: delinquencyInfo.totalOverdue, delinquencyPct: delinquencyInfo.pct, debtors };
+}
+
+async function severanceInput(q) {
+  const employee = await Employee.findById(requireId(q.get('employee_id'), 'employee_id')).lean();
+  if (!employee) throw new InputError('colaborador não encontrado', 404);
+  if (!employee.hire_date) throw new InputError('cadastre a data de admissão do colaborador');
+  return { employee, input: {
+    salary: employee.salary, hire_date: employee.hire_date, termination_date: q.get('date'), type: q.get('type'),
+    notice: q.get('notice') || 'paid_in_lieu', notice_worked: q.get('notice_worked') !== '0',
+    vacation_periods_taken: employee.vacation_periods_taken || 0, fgts_balance: employee.fgts_balance,
   } };
 }
 
-async function simularRescisao(q) {
-  const { f, entrada } = await dadosRescisao(q);
-  return { colaborador: { id: String(f._id), nome: f.nome }, ...calcularRescisao(entrada) };
+async function simulateSeverance(q) {
+  const { employee, input } = await severanceInput(q);
+  return { employee: { id: String(employee._id), name: employee.name }, ...calculateSeverance(input) };
 }
 
-// Desliga o colaborador e lança o custo da rescisão como despesa avulsa no mês.
-async function efetivarRescisao(body) {
+// Terminates the employee and posts the severance cost as a one-off expense in the month.
+async function applySeverance(body) {
   const q = new URLSearchParams(body);
-  const { f, entrada } = await dadosRescisao(q);
-  const r = calcularRescisao(entrada);
-  await Funcionario.updateOne({ _id: f._id }, { $set: { ativo: 0, data_desligamento: entrada.data_rescisao } });
-  await Lancamento.create({
-    escola_id: f.escola_id, data: entrada.data_rescisao, tipo: 'despesa', categoria: 'Rescisão', avulso: 1,
-    descricao: `${TIPOS_RESCISAO[entrada.tipo]} — ${f.nome}`, valor: r.custoEscola,
+  const { employee, input } = await severanceInput(q);
+  const result = calculateSeverance(input);
+  await Employee.updateOne({ _id: employee._id }, { $set: { active: 0, termination_date: input.termination_date } });
+  await Entry.create({
+    school_id: employee.school_id, date: input.termination_date, type: 'expense', category: 'Rescisão', one_off: 1,
+    description: `${SEVERANCE_TYPES[input.type]} — ${employee.name}`, amount: result.schoolCost,
   });
-  return { ok: true, custoEscola: r.custoEscola };
+  return { ok: true, schoolCost: result.schoolCost };
 }
 
 async function api(req, res, url) {
-  const [recurso, id] = url.pathname.split('/').filter(Boolean).slice(1);
-  if (id !== undefined) exigirId(id);
+  const [resource, seg2, seg3] = url.pathname.split('/').filter(Boolean).slice(1);
   const q = url.searchParams;
 
-  if (recurso === 'relatorio') return json(res, 200, await relatorio(exigirAno(q.get('ano') ?? new Date().getFullYear()), q.get('escola') || 'todas'));
+  if (resource === 'report') return json(res, 200, await buildReport(requireYear(q.get('year') ?? new Date().getFullYear()), q.get('school') || 'all'));
 
-  if (recurso === 'calendario') {
-    const escolaId = exigirId(q.get('escola_id'), 'escola_id');
-    const ano = exigirAno(q.get('ano'));
+  if (resource === 'bills' && (seg2 === 'generate' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
+    if (seg2 === 'generate' && req.method === 'POST') return json(res, 201, await generateBills(await readBody(req)));
+    if (seg2 === 'panel' && req.method === 'GET') return json(res, 200, await billsPanel(q.get('school') || 'all', Number(q.get('days')) || 7));
+    if (seg3 === 'pay' && req.method === 'POST') return json(res, 200, await payBill(requireId(seg2), await readBody(req)));
+    if (seg3 === 'undo' && req.method === 'POST') return json(res, 200, await undoBillPayment(requireId(seg2)));
+    return json(res, 405, { error: 'método não suportado' });
+  }
+
+  if (resource === 'tuition' && (seg2 === 'generate' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
+    if (seg2 === 'generate' && req.method === 'POST') return json(res, 201, await generateTuition(await readBody(req)));
+    if (seg2 === 'panel' && req.method === 'GET') return json(res, 200, await tuitionPanel(q.get('school') || 'all'));
+    if (seg3 === 'pay' && req.method === 'POST') return json(res, 200, await payTuition(requireId(seg2), await readBody(req)));
+    if (seg3 === 'undo' && req.method === 'POST') return json(res, 200, await undoTuitionPayment(requireId(seg2)));
+    return json(res, 405, { error: 'método não suportado' });
+  }
+
+  if (resource === 'children' && seg2 === 'occupancy') {
+    if (req.method !== 'GET') return json(res, 405, { error: 'método não suportado' });
+    const schoolId = requireId(q.get('school_id'), 'school_id');
+    const school = await School.findById(schoolId).select('capacity').lean();
+    if (!school) return json(res, 404, { error: 'escola não encontrada' });
+    const children = await Child.find({ school_id: schoolId }).select('enrollment_date exit_date').lean();
+    return json(res, 200, occupancy(children, school.capacity, new Date().toISOString().slice(0, 10)));
+  }
+
+  const id = seg2 && seg3 === undefined ? requireId(seg2) : undefined;
+
+  if (resource === 'calendar') {
+    const schoolId = requireId(q.get('school_id'), 'school_id');
+    const year = requireYear(q.get('year'));
     if (req.method === 'PUT') {
-      const { mes, fator, fechado } = await lerCorpo(req);
-      if (!Number.isInteger(mes) || mes < 1 || mes > 12) throw new ErroEntrada('mes deve ser um inteiro de 1 a 12');
-      if (fator !== undefined && !(Number(fator) >= 0 && Number(fator) <= 1)) throw new ErroEntrada('fator deve estar entre 0 e 1');
+      const { month, factor, closed, school_days } = await readBody(req);
+      if (!Number.isInteger(month) || month < 1 || month > 12) throw new InputError('mes deve ser um inteiro de 1 a 12');
+      if (factor !== undefined && !(Number(factor) >= 0 && Number(factor) <= 1)) throw new InputError('fator deve estar entre 0 e 1');
+      if (school_days !== undefined && school_days !== null && !(Number(school_days) >= 0 && Number(school_days) <= 31)) throw new InputError('dias_letivos deve estar entre 0 e 31');
       const set = {};
-      if (fator !== undefined) set.fator = Math.min(1, Math.max(0, Number(fator)));
-      if (fechado !== undefined) set.fechado = !!fechado;
-      await Calendario.updateOne({ escola_id: escolaId, ano, mes }, { $set: set });
+      if (factor !== undefined) set.factor = Math.min(1, Math.max(0, Number(factor)));
+      if (closed !== undefined) set.closed = !!closed;
+      if (school_days !== undefined) set.school_days = school_days === null ? null : Number(school_days);
+      await Calendar.updateOne({ school_id: schoolId, year, month }, { $set: set });
       return json(res, 200, { ok: true });
     }
-    await garantirCalendario(escolaId, ano);
-    return json(res, 200, await Calendario.find({ escola_id: escolaId, ano }).sort('mes').select('mes fator fechado -_id').lean());
+    await ensureCalendar(schoolId, year);
+    return json(res, 200, await Calendar.find({ school_id: schoolId, year }).sort('month').select('month factor closed school_days -_id').lean());
   }
 
-  if (recurso === 'dividir' && req.method === 'POST') return json(res, 201, await dividir(await lerCorpo(req)));
+  if (resource === 'split' && req.method === 'POST') return json(res, 201, await splitAmount(await readBody(req)));
 
-  if (recurso === 'rescisao') {
-    if (req.method === 'GET') return json(res, 200, await simularRescisao(q));
-    if (req.method === 'POST') return json(res, 201, await efetivarRescisao(await lerCorpo(req)));
+  if (resource === 'severance') {
+    if (req.method === 'GET') return json(res, 200, await simulateSeverance(q));
+    if (req.method === 'POST') return json(res, 201, await applySeverance(await readBody(req)));
   }
 
-  const def = RECURSOS[recurso];
-  if (!def) return json(res, 404, { erro: 'recurso não encontrado' });
-  const { model, cols } = def;
+  const resourceDef = RESOURCES[resource];
+  if (!resourceDef) return json(res, 404, { error: 'recurso não encontrado' });
+  const { model, cols } = resourceDef;
 
   if (req.method === 'GET') {
-    const filtro = {};
-    if (recurso !== 'escolas' && q.get('escola_id')) filtro.escola_id = exigirId(q.get('escola_id'), 'escola_id');
-    if (recurso === 'lancamentos' && q.get('ano')) filtro.data = { $regex: `^${exigirAno(q.get('ano'))}-` };
-    const ordem = recurso === 'lancamentos' ? { data: -1, _id: -1 } : { _id: 1 };
-    return json(res, 200, await model.find(filtro).sort(ordem));
+    const filter = {};
+    if (!['schools', 'suppliers'].includes(resource) && q.get('school_id')) filter.school_id = requireId(q.get('school_id'), 'school_id');
+    if (resource === 'entries' && q.get('year')) filter.date = { $regex: `^${requireYear(q.get('year'))}-` };
+    if (['bills', 'tuition'].includes(resource) && q.get('period')) filter.period = q.get('period');
+    const hasDueDate = ['bills', 'tuition'].includes(resource);
+    const order = resource === 'entries' ? { date: -1, _id: -1 } : hasDueDate ? { due_date: 1, _id: 1 } : { _id: 1 };
+    if (!hasDueDate) return json(res, 200, await model.find(filter).sort(order));
+    const today = new Date().toISOString().slice(0, 10);
+    const docs = await model.find(filter).sort(order).lean();
+    return json(res, 200, docs.map(({ _id, ...c }) => ({
+      ...c, id: String(_id),
+      status: resource === 'bills' ? billStatus(c, today) : (c.paid_at ? 'paid' : overdueBracket(c.due_date, today, false)),
+    })));
   }
   if (req.method === 'POST') {
-    const doc = await model.create(limpar(cols, await lerCorpo(req)));
+    const data = pickFields(cols, await readBody(req));
+    await resourceDef.validate?.(data);
+    const doc = await model.create(data);
     return json(res, 201, { id: String(doc._id) });
   }
   if (req.method === 'PUT' && id) {
-    await model.updateOne({ _id: id }, { $set: limpar(cols, await lerCorpo(req)) }, { runValidators: true });
+    const data = pickFields(cols, await readBody(req));
+    const existing = await model.findById(id).lean();
+    if (!existing) return json(res, 404, { error: 'não encontrado' });
+    await resourceDef.validate?.(data, existing);
+    await model.updateOne({ _id: id }, { $set: data }, { runValidators: true });
     return json(res, 200, { ok: true });
   }
   if (req.method === 'DELETE' && id) {
-    if (recurso === 'escolas') return json(res, 400, { erro: 'não é possível excluir escolas' });
-    if (q.get('grupo')) {
+    if (resource === 'schools') return json(res, 400, { error: 'não é possível excluir escolas' });
+    if (q.get('group')) {
       const doc = await model.findById(id);
-      if (doc?.grupo_id) return json(res, 200, { ok: true, removidos: (await model.deleteMany({ grupo_id: doc.grupo_id })).deletedCount });
+      if (!doc) return json(res, 404, { error: 'não encontrado' });
+      if (doc.group_id) return json(res, 200, { ok: true, removed: (await model.deleteMany({ group_id: doc.group_id })).deletedCount });
     }
-    await model.deleteOne({ _id: id });
+    const removedDoc = await model.findOneAndDelete({ _id: id });
+    if (!removedDoc) return json(res, 404, { error: 'não encontrado' });
     return json(res, 200, { ok: true });
   }
-  json(res, 405, { erro: 'método não suportado' });
+  json(res, 405, { error: 'método não suportado' });
 }
 
-const TIPOS = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
+const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8' };
 
-export function criarServidor() {
+export function createApp() {
   return createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     try {
       if (url.pathname.startsWith('/api/')) return await api(req, res, url);
       const rel = normalize(url.pathname === '/' ? '/index.html' : url.pathname);
-      const arquivo = join(PUBLIC, rel);
-      if (rel.includes('..') || !arquivo.startsWith(PUBLIC)) return json(res, 400, { erro: 'caminho inválido' });
-      const buf = await readFile(arquivo);
-      res.writeHead(200, { 'Content-Type': TIPOS[extname(rel)] || 'application/octet-stream' });
+      const filePath = join(PUBLIC, rel);
+      if (rel.includes('..') || !filePath.startsWith(PUBLIC)) return json(res, 400, { error: 'caminho inválido' });
+      const buf = await readFile(filePath);
+      res.writeHead(200, { 'Content-Type': CONTENT_TYPES[extname(rel)] || 'application/octet-stream' });
       res.end(buf);
     } catch (e) {
-      if (e.code === 'ENOENT' || e.code === 'EISDIR') return json(res, 404, { erro: 'não encontrado' });
-      const entrada = e instanceof ErroEntrada || e.name === 'ValidationError' || e.name === 'CastError';
-      if (!entrada) console.error(e);
-      json(res, e.status ?? (entrada ? 400 : 500), { erro: entrada ? mensagemDeValidacao(e) : 'erro interno' });
+      if (e.code === 'ENOENT' || e.code === 'EISDIR') return json(res, 404, { error: 'não encontrado' });
+      const isInputError = e instanceof InputError || e.name === 'ValidationError' || e.name === 'CastError';
+      if (!isInputError) console.error(e);
+      json(res, e.status ?? (isInputError ? 400 : 500), { error: isInputError ? validationMessage(e) : 'erro interno' });
     }
   });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  await conectar();
-  criarServidor().listen(PORT, HOST, () => console.log(`Controle das Escolas em http://${HOST === '127.0.0.1' ? 'localhost' : HOST}:${PORT}`));
+  await connect();
+  createApp().listen(PORT, HOST, () => console.log(`Controle das Escolas em http://${HOST === '127.0.0.1' ? 'localhost' : HOST}:${PORT}`));
 }

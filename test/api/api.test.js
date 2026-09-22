@@ -1,122 +1,122 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { iniciar } from './helpers.js';
+import { start } from './helpers.js';
 
 let api, novoMundo, cic;
-const perto = (a, b) => assert.ok(Math.abs(a - b) < 0.005, `esperava ${b}, veio ${a}`);
+const near = (a, b) => assert.ok(Math.abs(a - b) < 0.005, `expected ${b}, got ${a}`);
 
 before(async () => {
-  api = await iniciar();
-  [novoMundo, cic] = await api.escolas();
+  api = await start();
+  [novoMundo, cic] = await api.schools();
 });
-after(() => api.fechar());
+after(() => api.stop());
 
-test('AC1: relatório consolidado devolve 12 meses e respeita o repasse da Prefeitura', async () => {
-  await api.req('POST', '/api/receitas', { escola_id: novoMundo.id, descricao: 'Contrato Prefeitura', valor_mensal: 60000, segue_calendario: 1 });
-  const r = await api.req('GET', '/api/relatorio?ano=2026&escola=todas');
+test('AC1: the consolidated report returns 12 months and respects the city-hall transfer', async () => {
+  await api.req('POST', '/api/revenues', { school_id: novoMundo.id, description: 'Contrato Prefeitura', monthly_amount: 60000, follows_calendar: 1 });
+  const r = await api.req('GET', '/api/report?year=2026&school=all');
   assert.equal(r.status, 200);
-  assert.equal(r.corpo.meses.length, 12);
-  assert.ok(r.corpo.totais.receita > 0);
-  assert.equal(r.corpo.meses[0].receita, 0, 'janeiro: Prefeitura não paga');
-  assert.equal(r.corpo.meses[1].receita, 30000, 'fevereiro: metade');
-  assert.equal(r.corpo.meses[2].receita, 60000);
-  assert.equal(r.corpo.meses[6].receita, 0, 'julho: Prefeitura não paga');
+  assert.equal(r.body.months.length, 12);
+  assert.ok(r.body.totals.revenue > 0);
+  assert.equal(r.body.months[0].revenue, 0, 'January: the city hall does not pay');
+  assert.equal(r.body.months[1].revenue, 30000, 'February: half');
+  assert.equal(r.body.months[2].revenue, 60000);
+  assert.equal(r.body.months[6].revenue, 0, 'July: the city hall does not pay');
 });
 
-test('AC2 e AC3: dividir por crianças cria dois lançamentos ligados e a exclusão do grupo remove os dois', async () => {
-  await api.req('PUT', `/api/escolas/${novoMundo.id}`, { criancas: 62 });
-  await api.req('PUT', `/api/escolas/${cic.id}`, { criancas: 48 });
-  const d = await api.req('POST', '/api/dividir', {
-    recurso: 'lancamentos', modo: 'criancas',
-    dados: { data: '2026-03-12', tipo: 'despesa', categoria: 'Material de cozinha', descricao: 'Panelas', valor: 1850, avulso: 1 },
+test('AC2 and AC3: splitting by children creates two linked entries and deleting the group removes both', async () => {
+  await api.req('PUT', `/api/schools/${novoMundo.id}`, { children_count: 62 });
+  await api.req('PUT', `/api/schools/${cic.id}`, { children_count: 48 });
+  const d = await api.req('POST', '/api/split', {
+    resource: 'entries', mode: 'children',
+    data: { date: '2026-03-12', type: 'expense', category: 'Material de cozinha', description: 'Panelas', amount: 1850, one_off: 1 },
   });
   assert.equal(d.status, 201);
-  const [a, b] = d.corpo.partes;
-  perto(a.valor + b.valor, 1850);
-  assert.equal(a.valor, 1042.73);
-  assert.equal(b.valor, 807.27);
+  const [a, b] = d.body.splits;
+  near(a.amount + b.amount, 1850);
+  assert.equal(a.amount, 1042.73);
+  assert.equal(b.amount, 807.27);
 
-  const nm = (await api.req('GET', `/api/lancamentos?escola_id=${novoMundo.id}&ano=2026`)).corpo;
-  const ci = (await api.req('GET', `/api/lancamentos?escola_id=${cic.id}&ano=2026`)).corpo;
+  const nm = (await api.req('GET', `/api/entries?school_id=${novoMundo.id}&year=2026`)).body;
+  const ci = (await api.req('GET', `/api/entries?school_id=${cic.id}&year=2026`)).body;
   assert.equal(nm.length, 1);
   assert.equal(ci.length, 1);
-  assert.equal(nm[0].grupo_id, ci[0].grupo_id);
-  assert.equal(nm[0].valor_total, 1850);
+  assert.equal(nm[0].group_id, ci[0].group_id);
+  assert.equal(nm[0].total_amount, 1850);
 
-  const del = await api.req('DELETE', `/api/lancamentos/${nm[0].id}?grupo=1`);
-  assert.equal(del.corpo.removidos, 2);
-  assert.equal((await api.req('GET', `/api/lancamentos?escola_id=${cic.id}&ano=2026`)).corpo.length, 0);
+  const del = await api.req('DELETE', `/api/entries/${nm[0].id}?group=1`);
+  assert.equal(del.body.removed, 2);
+  assert.equal((await api.req('GET', `/api/entries?school_id=${cic.id}&year=2026`)).body.length, 0);
 });
 
-test('AC4 e AC5: rescisão bate com a conta à mão e efetivar desliga e lança o custo', async () => {
-  const f = (await api.req('POST', '/api/funcionarios', {
-    escola_id: cic.id, nome: 'Teste Silva', salario: 3000, data_admissao: '2023-03-10', ferias_periodos_gozados: 3,
-  })).corpo;
-  const q = `funcionario_id=${f.id}&data=2026-09-18&tipo=sem_justa_causa`;
+test('AC4 and AC5: severance matches the hand calculation, and applying it terminates the employee and posts the cost', async () => {
+  const e = (await api.req('POST', '/api/employees', {
+    school_id: cic.id, name: 'Teste Silva', salary: 3000, hire_date: '2023-03-10', vacation_periods_taken: 3,
+  })).body;
+  const q = `employee_id=${e.id}&date=2026-09-18&type=without_cause`;
 
-  const r = await api.req('GET', `/api/rescisao?${q}`);
+  const r = await api.req('GET', `/api/severance?${q}`);
   assert.equal(r.status, 200);
-  perto(r.corpo.totalColaborador, 10866.67);
-  perto(r.corpo.custoEscola, 16153.07);
+  near(r.body.totalToEmployee, 10866.67);
+  near(r.body.schoolCost, 16153.07);
 
-  const antes = (await api.req('GET', `/api/relatorio?ano=2026&escola=${cic.id}`)).corpo.meses[8].saida;
-  const ef = await api.req('POST', '/api/rescisao', { funcionario_id: f.id, data: '2026-09-18', tipo: 'sem_justa_causa', aviso: 'indenizado', aviso_cumprido: '1' });
-  assert.equal(ef.status, 201);
+  const before = (await api.req('GET', `/api/report?year=2026&school=${cic.id}`)).body.months[8].cashOut;
+  const applied = await api.req('POST', '/api/severance', { employee_id: e.id, date: '2026-09-18', type: 'without_cause', notice: 'paid_in_lieu', notice_worked: '1' });
+  assert.equal(applied.status, 201);
 
-  const func = (await api.req('GET', `/api/funcionarios?escola_id=${cic.id}`)).corpo.find((x) => x.id === f.id);
-  assert.equal(func.ativo, 0);
-  assert.equal(func.data_desligamento, '2026-09-18');
+  const employee = (await api.req('GET', `/api/employees?school_id=${cic.id}`)).body.find((x) => x.id === e.id);
+  assert.equal(employee.active, 0);
+  assert.equal(employee.termination_date, '2026-09-18');
 
-  const lanc = (await api.req('GET', `/api/lancamentos?escola_id=${cic.id}&ano=2026`)).corpo;
-  assert.equal(lanc.length, 1);
-  assert.equal(lanc[0].categoria, 'Rescisão');
-  assert.equal(lanc[0].avulso, 1);
-  perto(lanc[0].valor, 16153.07);
+  const entries = (await api.req('GET', `/api/entries?school_id=${cic.id}&year=2026`)).body;
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].category, 'Rescisão');
+  assert.equal(entries[0].one_off, 1);
+  near(entries[0].amount, 16153.07);
 
-  const depois = (await api.req('GET', `/api/relatorio?ano=2026&escola=${cic.id}`)).corpo.meses[8].saida;
-  perto(depois - antes, 16153.07); // o salário de setembro continua; só a rescisão soma
+  const after = (await api.req('GET', `/api/report?year=2026&school=${cic.id}`)).body.months[8].cashOut;
+  near(after - before, 16153.07); // September's salary keeps going; only the severance adds on top
 });
 
-test('AC7: entrada inválida devolve 4xx com mensagem, nunca 500', async () => {
-  const sem = (await api.req('POST', '/api/funcionarios', { escola_id: novoMundo.id, nome: 'Com admissão', salario: 2000, data_admissao: '2024-01-10' })).corpo;
-  const semAdmissao = (await api.req('POST', '/api/funcionarios', { escola_id: novoMundo.id, nome: 'Sem admissão', salario: 2000 })).corpo;
-  const casos = [
-    ['ano não numérico', () => api.req('GET', '/api/relatorio?ano=abc&escola=todas'), 400],
-    ['ano fora da faixa', () => api.req('GET', '/api/relatorio?ano=1800&escola=todas'), 400],
-    ['escola inválida', () => api.req('GET', '/api/relatorio?ano=2026&escola=xyz'), 400],
-    ['id malformado no PUT', () => api.req('PUT', '/api/funcionarios/xyz', { nome: 'x' }), 400],
-    ['id malformado no DELETE', () => api.req('DELETE', '/api/receitas/123'), 400],
-    ['JSON quebrado', () => api.req('POST', '/api/receitas', '{nao e json', { bruto: true }), 400],
-    ['corpo que não é objeto', () => api.req('POST', '/api/receitas', '[1,2]', { bruto: true }), 400],
-    ['número onde deveria ser texto/valor', () => api.req('POST', '/api/receitas', { escola_id: novoMundo.id, descricao: 'x', valor_mensal: 'abc' }), 400],
-    ['mês 13 no calendário', () => api.req('PUT', `/api/calendario?escola_id=${novoMundo.id}&ano=2026`, { mes: 13, fator: 1 }), 400],
-    ['fator acima de 1', () => api.req('PUT', `/api/calendario?escola_id=${novoMundo.id}&ano=2026`, { mes: 3, fator: 5 }), 400],
-    ['rescisão de colaborador inexistente', () => api.req('GET', `/api/rescisao?funcionario_id=${'a'.repeat(24)}&data=2026-09-18&tipo=acordo`), 404],
-    ['rescisão com data inválida', () => api.req('GET', `/api/rescisao?funcionario_id=${sem.id}&data=hoje&tipo=acordo`), 400],
-    ['rescisão antes da admissão', () => api.req('GET', `/api/rescisao?funcionario_id=${sem.id}&data=2020-01-01&tipo=acordo`), 400],
-    ['rescisão com motivo inválido', () => api.req('GET', `/api/rescisao?funcionario_id=${sem.id}&data=2026-09-18&tipo=inventado`), 400],
-    ['rescisão de colaborador sem admissão', () => api.req('GET', `/api/rescisao?funcionario_id=${semAdmissao.id}&data=2026-09-18&tipo=acordo`), 400],
-    ['divisão manual que não soma 100', () => api.req('POST', '/api/dividir', { recurso: 'lancamentos', modo: 'manual', pcts: { [novoMundo.id]: 70, [cic.id]: 20 }, dados: { data: '2026-01-01', tipo: 'despesa', valor: 100 } }), 400],
-    ['divisão de recurso não permitido', () => api.req('POST', '/api/dividir', { recurso: 'escolas', modo: 'igual', dados: { valor: 1 } }), 400],
-    ['despesa sem descrição', () => api.req('POST', '/api/despesas', { escola_id: novoMundo.id, valor_mensal: 10 }), 400],
-    ['recurso inexistente', () => api.req('GET', '/api/naoexiste'), 404],
-    ['excluir escola', () => api.req('DELETE', `/api/escolas/${novoMundo.id}`), 400],
-    ['corpo gigante', () => api.req('POST', '/api/receitas', { escola_id: novoMundo.id, descricao: 'x'.repeat(1.2 * 1024 * 1024) }), 413],
+test('AC7: invalid input returns 4xx with a message, never 500', async () => {
+  const withHire = (await api.req('POST', '/api/employees', { school_id: novoMundo.id, name: 'Com admissão', salary: 2000, hire_date: '2024-01-10' })).body;
+  const noHire = (await api.req('POST', '/api/employees', { school_id: novoMundo.id, name: 'Sem admissão', salary: 2000 })).body;
+  const cases = [
+    ['non-numeric year', () => api.req('GET', '/api/report?year=abc&school=all'), 400],
+    ['year out of range', () => api.req('GET', '/api/report?year=1800&school=all'), 400],
+    ['invalid school', () => api.req('GET', '/api/report?year=2026&school=xyz'), 400],
+    ['malformed id on PUT', () => api.req('PUT', '/api/employees/xyz', { name: 'x' }), 400],
+    ['malformed id on DELETE', () => api.req('DELETE', '/api/revenues/123'), 400],
+    ['broken JSON', () => api.req('POST', '/api/revenues', '{not json', { raw: true }), 400],
+    ['body that is not an object', () => api.req('POST', '/api/revenues', '[1,2]', { raw: true }), 400],
+    ['number where a string/amount was expected', () => api.req('POST', '/api/revenues', { school_id: novoMundo.id, description: 'x', monthly_amount: 'abc' }), 400],
+    ['month 13 in the calendar', () => api.req('PUT', `/api/calendar?school_id=${novoMundo.id}&year=2026`, { month: 13, factor: 1 }), 400],
+    ['factor above 1', () => api.req('PUT', `/api/calendar?school_id=${novoMundo.id}&year=2026`, { month: 3, factor: 5 }), 400],
+    ['severance for a nonexistent employee', () => api.req('GET', `/api/severance?employee_id=${'a'.repeat(24)}&date=2026-09-18&type=mutual_agreement`), 404],
+    ['severance with an invalid date', () => api.req('GET', `/api/severance?employee_id=${withHire.id}&date=today&type=mutual_agreement`), 400],
+    ['severance before the hire date', () => api.req('GET', `/api/severance?employee_id=${withHire.id}&date=2020-01-01&type=mutual_agreement`), 400],
+    ['severance with an invalid type', () => api.req('GET', `/api/severance?employee_id=${withHire.id}&date=2026-09-18&type=made_up`), 400],
+    ['severance for an employee with no hire date', () => api.req('GET', `/api/severance?employee_id=${noHire.id}&date=2026-09-18&type=mutual_agreement`), 400],
+    ['manual split that does not add up to 100', () => api.req('POST', '/api/split', { resource: 'entries', mode: 'manual', percentages: { [novoMundo.id]: 70, [cic.id]: 20 }, data: { date: '2026-01-01', type: 'expense', amount: 100 } }), 400],
+    ['split of a disallowed resource', () => api.req('POST', '/api/split', { resource: 'schools', mode: 'equal', data: { amount: 1 } }), 400],
+    ['expense with no description', () => api.req('POST', '/api/expenses', { school_id: novoMundo.id, monthly_amount: 10 }), 400],
+    ['nonexistent resource', () => api.req('GET', '/api/doesnotexist'), 404],
+    ['delete a school', () => api.req('DELETE', `/api/schools/${novoMundo.id}`), 400],
+    ['oversized body', () => api.req('POST', '/api/revenues', { school_id: novoMundo.id, description: 'x'.repeat(1.2 * 1024 * 1024) }), 413],
   ];
-  for (const [nome, executar, esperado] of casos) {
-    const r = await executar();
-    assert.equal(r.status, esperado, `${nome}: esperava ${esperado}, veio ${r.status} ${JSON.stringify(r.corpo).slice(0, 120)}`);
-    assert.ok(r.corpo.erro, `${nome}: deve trazer mensagem de erro`);
-    assert.ok(!/Path `|validation failed|Cast to/i.test(r.corpo.erro), `${nome}: mensagem técnica vazou: ${r.corpo.erro}`);
+  for (const [name, run, expected] of cases) {
+    const r = await run();
+    assert.equal(r.status, expected, `${name}: expected ${expected}, got ${r.status} ${JSON.stringify(r.body).slice(0, 120)}`);
+    assert.ok(r.body.error, `${name}: should carry an error message`);
+    assert.ok(!/Path `|validation failed|Cast to/i.test(r.body.error), `${name}: a technical message leaked: ${r.body.error}`);
   }
-  const semDescricao = await api.req('POST', '/api/despesas', { escola_id: novoMundo.id, valor_mensal: 10 });
-  assert.equal(semDescricao.corpo.erro, 'Preencha o campo "descrição".');
+  const noDescription = await api.req('POST', '/api/expenses', { school_id: novoMundo.id, monthly_amount: 10 });
+  assert.equal(noDescription.body.error, 'Preencha o campo "descrição".');
 });
 
-test('AC7: caminho com ".." não devolve arquivos fora de public/', async () => {
-  for (const caminho of ['/../server.js', '/..%2fserver.js', '/%2e%2e/db.js']) {
-    const r = await api.req('GET', caminho);
-    assert.ok(r.status >= 400 && r.status < 500, `${caminho} devolveu ${r.status}`);
-    assert.ok(!String(r.corpo).includes('mongoose'), `${caminho} vazou código-fonte`);
+test('AC7: a path with ".." never serves files outside public/', async () => {
+  for (const path of ['/../server.js', '/..%2fserver.js', '/%2e%2e/db.js']) {
+    const r = await api.req('GET', path);
+    assert.ok(r.status >= 400 && r.status < 500, `${path} returned ${r.status}`);
+    assert.ok(!String(r.body).includes('mongoose'), `${path} leaked source code`);
   }
 });

@@ -1,9 +1,9 @@
 # Loop Engineering: PLAN → REFINEMENT → IMPLEMENT → TEST → VERIFY → DOCUMENT → PLAN AGAIN
 
-Processo adaptado do Loop Engineering v2 usado no Kivoni (`lmfit-web/docs/ecommerce/LOOP_PROCESS.md`).
-Um loop é um incremento entregável, guiado por **uma spec** em [`specs/`](./specs/) que carrega o
-**Registro de acompanhamento** pelas sete fases. A spec é a fonte da verdade: se código e spec divergem,
-corrija um dos dois antes de fechar o loop.
+Process adapted from the Loop Engineering v2 used at Kivoni (`lmfit-web/docs/ecommerce/LOOP_PROCESS.md`).
+A loop is a deliverable increment, driven by **one spec** in [`specs/`](./specs/) that carries the
+**Follow-up record** through the seven phases. The spec is the source of truth: if the code and the
+spec disagree, fix one of them before closing the loop.
 
 ```
             ┌──────────────────────────── PLAN AGAIN ◄─────────────────────────┐
@@ -11,110 +11,130 @@ corrija um dos dois antes de fechar o loop.
    PLAN ──► REFINEMENT ──► IMPLEMENT ──► TEST ──► VERIFY ──► DOCUMENT ─────────┘
 ```
 
-Cada fase tem **critério de entrada**, **checklist** (copiado na spec e marcado com evidência) e **portão de saída**.
-Falha em TEST/VERIFY volta para IMPLEMENT; suposição quebrada volta para PLAN.
+Each phase has an **entry criterion**, a **checklist** (copied into the spec and checked off with
+evidence) and an **exit gate**. A TEST/VERIFY failure goes back to IMPLEMENT; a broken assumption
+goes back to PLAN.
 
-## Regras de base
+## Ground rules
 
-- **Um loop por vez.** Termine (ou estacione com carry-overs registrados) antes de começar o próximo.
-- **Specs são contratos executáveis:** todo critério de aceite (AC) nomeia como se verifica: um comando, um teste ou um passo no navegador que outra pessoa consiga repetir.
-- **Nunca pule TEST nem VERIFY.** TEST = prova por código. VERIFY = prova no app rodando de verdade. "Testes passando" sozinho não fecha loop.
-- **Dinheiro e dados pessoais:** salários, CPF, rescisões e dados de crianças são sensíveis (LGPD). Todo endpoint novo assume entrada hostil e devolve 400 (nunca 500) para dado inválido; nada de dado real em testes ou commits.
-- **O servidor é a autoridade nos cálculos.** O front só exibe; regra de negócio mora em funções puras testáveis (`calc.js`, `rescisao.js`, `rateio.js` e as novas).
-- **Funções puras primeiro:** lógica financeira nova nasce sem banco, com teste em `node:test`/`assert`, antes de ligar em Mongo e tela.
-- **Portão de exposição:** nenhum loop pode publicar o app fora do computador local antes do Loop 8 (usuários e permissões) estar Done.
+- **One loop at a time.** Finish it (or park it with carry-overs recorded) before starting the next.
+- **Specs are executable contracts:** every acceptance criterion (AC) names how it's verified — a
+  command, a test or a browser step someone else could repeat.
+- **Never skip TEST or VERIFY.** TEST = proof by code. VERIFY = proof in the app actually running.
+  "Tests pass" alone never closes a loop.
+- **Money and personal data:** salaries, CPF, severances and children's data are sensitive (LGPD,
+  Brazil's privacy law). Every new endpoint assumes hostile input and returns 400 (never 500) for
+  invalid data; no real data in tests or commits.
+- **The server is the authority on calculations.** The front end only displays; business rules live
+  in pure, testable functions (`calc.js`, `severance.js`, `proration.js` and the new ones).
+- **Pure functions first:** new financial logic is born without a database, with a `node:test`/`assert`
+  test, before it's wired into Mongo and the screen.
+- **Exposure gate:** no loop may publish the app outside the local machine before Loop 8 (users and
+  permissions) is Done.
 
-## Comandos do projeto
+## Project commands
 
-| Para | Comando |
+| To | Command |
 |---|---|
-| Subir o Mongo | `npm run db` (Docker precisa estar ligado) |
-| App com dados de demonstração | `npm run demo` → http://localhost:3200 |
-| Testes de lógica (sem banco) | `npm test` |
-| Testes de API (com Mongo de teste) | `npm run test:api` (criado no Loop 0) |
-| Backup | `npm run backup` (criado no Loop 0) |
+| Start Mongo | `npm run db` (Docker must be running) |
+| App with demo data | `npm run demo` → http://localhost:3200 |
+| Logic tests (no database) | `npm test` |
+| API tests (with a test Mongo) | `npm run test:api` (created in Loop 0) |
+| Backup | `npm run backup` (created in Loop 0) |
 
-## Ciclo de vida da spec
+## Spec lifecycle
 
 `Draft → Ready → In progress → Testing → Verifying → Done`
 
-## Fase 1 — PLAN (rascunhar a spec)
-**Entrada:** loop anterior Done (ou estacionado) e outline no ROADMAP.
-- [ ] Ler carry-overs do loop anterior e as seções relevantes de `BENCHMARK.md`
-- [ ] **Explorar o código real** que o loop toca e listar arquivos/endpoints na spec (nunca planejar de memória)
-- [ ] Escrever Objetivo, Escopo (dentro/fora), primeiro rascunho de ACs e tarefas
-- [ ] Listar decisões abertas com opções (ainda sem resolver)
-- [ ] Listar riscos e incógnitas para atacar na REFINEMENT
+## Phase 1 — PLAN (draft the spec)
+**Entry:** the previous loop is Done (or parked) and there's an outline in the ROADMAP.
+- [ ] Read the previous loop's carry-overs and the relevant sections of `BENCHMARK.md`
+- [ ] **Explore the real code** the loop touches and list files/endpoints in the spec (never plan
+      from memory)
+- [ ] Write the Goal, Scope (in/out), a first draft of the ACs and tasks
+- [ ] List open decisions with options (still unresolved)
+- [ ] List risks and unknowns to tackle in REFINEMENT
 
-**Saída:** spec `Draft`, linkada na tabela do ROADMAP.
+**Exit:** spec `Draft`, linked in the ROADMAP table.
 
-## Fase 2 — REFINEMENT (desafiar a spec)
-Onde escopo é cortado, ACs viram testáveis e decisões são resolvidas, antes de escrever código.
-- [ ] Resolver toda decisão e registrar na tabela Decisões com o porquê (perguntar ao dono **agora**, nunca no meio da implementação)
-- [ ] Conferir cada suposição no código (grep/leitura/curl)
-- [ ] Reescrever cada AC até nomear a verificação *(verificar: …)*
-- [ ] Cortar ou adiar o que não serve ao objetivo do loop (vai para Fora do escopo)
-- [ ] Ordenar tarefas por dependência; quebrar qualquer uma maior que meio dia
-- [ ] Revisão de Definition of Ready: escopo cabe, ACs testáveis, decisões resolvidas, tarefas ordenadas
+## Phase 2 — REFINEMENT (challenge the spec)
+Where scope gets cut, ACs become testable and decisions get resolved, before writing any code.
+- [ ] Resolve every decision and record it in the Decisions table with the reasoning (ask the owner
+      **now**, never mid-implementation)
+- [ ] Check every assumption against the code (grep/read/curl)
+- [ ] Rewrite every AC until it names its verification *(verify: …)*
+- [ ] Cut or defer anything that doesn't serve the loop's goal (goes into Out of scope)
+- [ ] Order the tasks by dependency; split any that's bigger than half a day
+- [ ] Definition-of-Ready review: scope fits, ACs are testable, decisions are resolved, tasks are
+      ordered
 
-**Saída:** spec `Ready`. Sem código antes deste portão.
+**Exit:** spec `Ready`. No code before this gate.
 
-## Fase 3 — IMPLEMENT (construir pequeno)
-**Entrada:** spec `Ready`. Status vira `In progress`.
-- [ ] Trabalhar a lista de tarefas de cima para baixo, marcando na spec
-- [ ] Seguir os padrões existentes antes de inventar (CRUD genérico em `server.js`, modelos em `db.js`, `campo()`/`crud()`/`cartao()` em `public/app.js`)
-- [ ] `node --check` em todo arquivo tocado e `npm test` verde a cada tarefa, não só no fim
-- [ ] Novas variáveis de ambiente vão para `.env.example` e para a seção Configuração, no mesmo commit
-- [ ] Bloqueio ou escopo descoberto volta para a spec, nunca é improvisado
+## Phase 3 — IMPLEMENT (build small)
+**Entry:** spec `Ready`. Status becomes `In progress`.
+- [ ] Work through the task list top to bottom, checking them off in the spec
+- [ ] Follow the existing patterns before inventing new ones (the generic CRUD in `server.js`,
+      models in `db.js`, `field()`/`crud()`/`card()` in `public/app.js`)
+- [ ] `node --check` on every touched file and `npm test` green after every task, not just at the end
+- [ ] New environment variables go into `.env.example` and the Configuration section, in the same
+      commit
+- [ ] Any blocker or newly-found scope goes back into the spec, never improvised
 
-**Saída:** todas as tarefas marcadas; checagem de sintaxe e testes verdes.
+**Exit:** every task checked off; syntax check and tests green.
 
-## Fase 4 — TEST (provar por código)
-- [ ] Teste unitário para toda lógica nova com ramificação
-- [ ] Cada AC testável tem ao menos um teste que o nomeia (`AC4: recusa valor negativo`)
-- [ ] Caminhos negativos: entrada inválida, id inexistente, repetição/idempotência, valor limite (centavos, virada de ano, mês com 28 dias)
-- [ ] Suítes completas verdes; **registrar as contagens** na spec
-- [ ] Nenhum teste apagado ou enfraquecido para passar
+## Phase 4 — TEST (prove it by code)
+- [ ] A unit test for every new piece of logic with branching
+- [ ] Every testable AC has at least one test naming it (`AC4: rejects a negative amount`)
+- [ ] Negative paths: invalid input, a nonexistent id, repetition/idempotency, boundary values
+      (cents, year rollover, a 28-day month)
+- [ ] Full suites green; **record the counts** in the spec
+- [ ] No test deleted or weakened just to make it pass
 
-**Saída:** suítes verdes cobrindo os ACs; contagens na spec.
+**Exit:** suites green covering the ACs; counts recorded in the spec.
 
-## Fase 5 — VERIFY (provar ao vivo)
-Testes não enxergam becos sem saída de UX. Aqui se anda pelo app de verdade.
-- [ ] Percorrer o fluxo completo no navegador em `localhost:3200` (clicar, não só `curl`), com capturas de tela dos estados-chave, em tema claro e escuro e em largura de celular
-- [ ] Marcar cada AC como `✅ verificado <como>` ou `❌ falhou`
-- [ ] Sonda de entrada hostil em todo endpoint novo (id inválido, corpo vazio, texto onde deveria ser número) e, após o Loop 8, de acesso (sem login, papel errado)
-- [ ] **Listar tudo o que escuta na rede** (`lsof -iTCP -sTCP:LISTEN -n -P`) e conferir cada porta aberta do projeto: app, banco, qualquer serviço novo
-- [ ] Varredura de regressão nos fluxos vizinhos (Painel, rescisão, divisão de compras, calendário)
-- [ ] **Conferir os números à mão** ao menos uma vez: o valor na tela bate com a conta feita fora do app
-- [ ] Qualquer ❌ volta para IMPLEMENT; rodar TEST de novo antes de retornar
+## Phase 5 — VERIFY (prove it live)
+Tests don't see UX dead ends. This is where you actually walk through the running app.
+- [ ] Walk the whole flow in the browser at `localhost:3200` (click it, don't just `curl` it), with
+      screenshots of the key states, in light and dark theme and at phone width
+- [ ] Mark every AC as `✅ verified <how>` or `❌ failed`
+- [ ] Hostile-input probe on every new endpoint (invalid id, empty body, text where a number was
+      expected) and, after Loop 8, an access probe (no login, wrong role)
+- [ ] **List everything listening on the network** (`lsof -iTCP -sTCP:LISTEN -n -P`) and check every
+      open port of the project: app, database, any new service
+- [ ] Regression sweep of the neighboring flows (Dashboard, severance, splitting a purchase,
+      calendar)
+- [ ] **Check the numbers by hand** at least once: the value on screen matches a calculation done
+      outside the app
+- [ ] Any ❌ goes back to IMPLEMENT; re-run TEST before coming back here
 
-**Saída:** todo AC ✅ com evidência no Registro de verificação.
+**Exit:** every AC ✅ with evidence in the Verification record.
 
-## Fase 6 — DOCUMENT (tornar durável)
-- [ ] Spec: status `Done` e seção Resultado preenchida (o que entregou, desvios, evidências)
-- [ ] ROADMAP: virar o status e adicionar linha no Changelog
-- [ ] Atualizar docs vivos: `README.md`, `BENCHMARK.md` (coluna "Neste app"), `.env.example`
-- [ ] Limpar: dados de teste, TODOs viram carry-overs
+## Phase 6 — DOCUMENT (make it durable)
+- [ ] Spec: status `Done` and the Result section filled in (what shipped, deviations, evidence)
+- [ ] ROADMAP: flip the status and add a Changelog line
+- [ ] Update the living docs: `README.md`, `BENCHMARK.md` (the "In this app" column), `.env.example`
+- [ ] Clean up: test data, TODOs turned into carry-overs
 
-**Saída:** alguém novo consegue pegar o próximo loop só pelos docs.
+**Exit:** someone new could pick up the next loop from the docs alone.
 
-## Fase 7 — PLAN AGAIN (retro → próximo loop)
-- [ ] Retro em 3 linhas no Resultado: o que ajudou, o que atrapalhou, o que mudar no processo
-- [ ] Carry-overs viram entrada do próximo PLAN ou novas linhas do ROADMAP
-- [ ] Repriorizar: o próximo loop ainda faz sentido? Se não, reordenar com nota no Changelog
-- [ ] Atualizar a memória do projeto (status do roadmap, próximo loop, fatos novos)
-- [ ] Começar o PLAN do próximo loop
+## Phase 7 — PLAN AGAIN (retro → next loop)
+- [ ] A 3-line retro in the Result: what helped, what hurt, what to change in the process
+- [ ] Carry-overs become input for the next PLAN or new ROADMAP lines
+- [ ] Re-prioritize: does the next loop still make sense? If not, reorder with a note in the
+      Changelog
+- [ ] Update the project's memory (roadmap status, next loop, new facts)
+- [ ] Start the next loop's PLAN
 
-## Template de spec
+## Spec template
 
-Copie para `specs/loop-NN-<slug>.md`. Os arquivos atuais já seguem este formato.
+Copy it to `specs/loop-NN-<slug>.md`. The current files already follow this format.
 
-Seções: Status/Depende de/Arquivos · Objetivo · Escopo (dentro/fora) · Decisões · Critérios de aceite ·
-Notas de design · Configuração · Tarefas · Registro de acompanhamento (7 fases) · Registro de verificação · Resultado.
+Sections: Status/Depends on/Files · Goal · Scope (in/out) · Decisions · Acceptance criteria ·
+Design notes · Configuration · Tasks · Follow-up record (7 phases) · Verification record · Result.
 
-## Changelog do processo
+## Process changelog
 
-| Data | Mudança |
+| Date | Change |
 |---|---|
-| 2026-09-21 | VERIFY ganha "listar tudo o que escuta na rede" (Loop 0: o Mongo estava aberto à rede e só a varredura completa pegou) |
-| 2026-09-21 | Adaptação do Loop Engineering v2 do Kivoni para este projeto: comandos Node/Mongo, portão de exposição, regra de funções puras e conferência manual dos números |
+| 2026-09-21 | VERIFY gains "list everything listening on the network" (Loop 0: Mongo was open to the network and only the full sweep caught it) |
+| 2026-09-21 | Adapted Kivoni's Loop Engineering v2 for this project: Node/Mongo commands, the exposure gate, the pure-functions-first rule, and checking the numbers by hand |

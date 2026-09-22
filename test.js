@@ -1,59 +1,82 @@
 import assert from 'node:assert/strict';
-import { calcularEscola } from './calc.js';
+import { calculateSchool } from './calc.js';
 
-const fatores = [0, 0.5, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1];
-const r = calcularEscola({
-  escola: { encargos_pct: 8, imposto_pct: 6, saldo_inicial: 0, mes_ferias: 1 },
-  funcionarios: [{ salario: 3000, beneficios: 500, ativo: 1, mes_ferias: null }, { salario: 9999, beneficios: 0, ativo: 0 }],
-  receitas: [{ valor_mensal: 20000, segue_calendario: 1 }],
-  despesas: [{ valor_mensal: 2000, segue_calendario: 1 }, { valor_mensal: 1000, segue_calendario: 0 }],
-  fatores,
-  lancamentos: [],
+const factors = [0, 0.5, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1];
+const r = calculateSchool({
+  school: { payroll_tax_pct: 8, tax_pct: 6, initial_balance: 0, vacation_month: 1 },
+  employees: [{ salary: 3000, benefits: 500, active: 1, vacation_month: null }, { salary: 9999, benefits: 0, active: 0 }],
+  revenues: [{ monthly_amount: 20000, follows_calendar: 1 }],
+  expenses: [{ monthly_amount: 2000, follows_calendar: 1 }, { monthly_amount: 1000, follows_calendar: 0 }],
+  factors,
+  entries: [],
 });
-const [jan, fev, mar, , , , jul, , , , nov, dez] = r.meses;
+const [jan, feb, mar, , , , jul, , , , nov, dec] = r.months;
 
-assert.equal(jan.receita, 0);            // prefeitura não paga em janeiro
-assert.equal(fev.receita, 10000);        // metade de fevereiro
-assert.equal(jul.receita, 0);
-assert.equal(mar.receita, 20000);
-assert.equal(jan.despesas, 1000);        // só a despesa fixa (alimentação não segue calendário aqui = 2000*0)
-assert.equal(mar.despesas, 3000);
-assert.equal(mar.encargos, 240);         // 8% de 3000, ignora inativo
-assert.equal(mar.prov13, 270);           // 3000/12 * 1.08
-assert.equal(mar.provFerias, 90);        // 3000/3/12 * 1.08
-assert.equal(mar.impostos, 1200);
-assert.equal(jan.pagtoFerias, 1080);     // 1/3 de 3000 + 8%
-assert.equal(nov.pagto13, 1620);         // metade do 13º + 8%
-assert.equal(dez.pagto13, 1620);
-// Janeiro: sem receita, mas paga folha + fixas + adicional de férias => caixa negativo
-assert.equal(jan.saida, 3000 + 500 + 240 + 1000 + 0 + 0 + 1080);
-assert.ok(jan.saldo < 0);
-assert.ok(r.reservaNecessaria > 0);
+assert.equal(jan.revenue, 0);            // city hall doesn't pay in January
+assert.equal(feb.revenue, 10000);        // half of February
+assert.equal(jul.revenue, 0);
+assert.equal(mar.revenue, 20000);
+assert.equal(jan.expenses, 1000);        // only the fixed expense (meals here don't follow the calendar = 2000*0)
+assert.equal(mar.expenses, 3000);
+assert.equal(mar.charges, 240);          // 8% of 3000, ignores the inactive one
+assert.equal(mar.thirteenthProvision, 270);   // 3000/12 * 1.08
+assert.equal(mar.vacationProvision, 90);      // 3000/3/12 * 1.08
+assert.equal(mar.taxes, 1200);
+assert.equal(jan.vacationPayout, 1080);  // 1/3 of 3000 + 8%
+assert.equal(nov.thirteenthPayout, 1620);     // half of the 13th + 8%
+assert.equal(dec.thirteenthPayout, 1620);
+// January: no revenue, but pays payroll + fixed costs + vacation bonus => negative cash
+assert.equal(jan.cashOut, 3000 + 500 + 240 + 1000 + 0 + 0 + 1080);
+assert.ok(jan.balance < 0);
+assert.ok(r.reserveNeeded > 0);
 
-// Mês aberto: lançamento comum não altera o caixa; avulso soma ao previsto
+// Open month: a regular entry doesn't change cash; a one-off adds to the plan
 const base = {
-  escola: { encargos_pct: 8, imposto_pct: 6, saldo_inicial: 0, mes_ferias: 1 },
-  funcionarios: [], receitas: [{ valor_mensal: 100, segue_calendario: 0 }], despesas: [{ valor_mensal: 10, categoria: 'Luz', segue_calendario: 0 }], fatores, ano: 2026,
+  school: { payroll_tax_pct: 8, tax_pct: 6, initial_balance: 0, vacation_month: 1 },
+  employees: [], revenues: [{ monthly_amount: 100, follows_calendar: 0 }], expenses: [{ monthly_amount: 10, category: 'Luz', follows_calendar: 0 }], factors, year: 2026,
 };
-let r2 = calcularEscola({ ...base, lancamentos: [
-  { data: '2026-03-10', tipo: 'despesa', categoria: 'Luz', valor: 12, avulso: 0 },
-  { data: '2026-03-12', tipo: 'despesa', categoria: 'Material de limpeza', valor: 50, avulso: 1 },
+let r2 = calculateSchool({ ...base, entries: [
+  { date: '2026-03-10', type: 'expense', category: 'Luz', amount: 12, one_off: 0 },
+  { date: '2026-03-12', type: 'expense', category: 'Material de limpeza', amount: 50, one_off: 1 },
 ] });
-assert.equal(r2.meses[2].saida, 10 + 0 + 50 + 0.06 * 100);   // previsto 10 + avulso 50 + imposto 6
-assert.deepEqual(r2.categorias.find((c) => c.categoria === 'Luz'), { categoria: 'Luz', previsto: 120, realizado: 12 });
+assert.equal(r2.months[2].cashOut, 10 + 0 + 50 + 0.06 * 100);   // planned 10 + one-off 50 + tax 6
+assert.deepEqual(r2.categories.find((c) => c.category === 'Luz'), { category: 'Luz', budgeted: 120, actual: 12 });
 
-// Mês fechado: caixa usa só o realizado
-r2 = calcularEscola({ ...base, fechados: [false, false, true], lancamentos: [{ data: '2026-03-10', tipo: 'receita', valor: 777 }] });
-assert.equal(r2.meses[2].entrada, 777);
-assert.equal(r2.meses[2].saida, 0);
-assert.equal(r2.meses[3].entrada, 100);
+// Closed month: cash flow uses only the actual entries
+r2 = calculateSchool({ ...base, closedMonths: [false, false, true], entries: [{ date: '2026-03-10', type: 'revenue', amount: 777 }] });
+assert.equal(r2.months[2].cashIn, 777);
+assert.equal(r2.months[2].cashOut, 0);
+assert.equal(r2.months[3].cashIn, 100);
 
-// Colaborador só conta nos meses em que está empregado
-const r3 = calcularEscola({ ...base, despesas: [], receitas: [], lancamentos: [], funcionarios: [
-  { salario: 1000, beneficios: 0, ativo: 0, data_admissao: '2025-01-10', data_desligamento: '2026-03-20' },
-  { salario: 2000, beneficios: 0, ativo: 1, data_admissao: '2026-06-01' },
+// An employee only counts in the months they're actually employed
+const r3 = calculateSchool({ ...base, expenses: [], revenues: [], entries: [], employees: [
+  { salary: 1000, benefits: 0, active: 0, hire_date: '2025-01-10', termination_date: '2026-03-20' },
+  { salary: 2000, benefits: 0, active: 1, hire_date: '2026-06-01' },
 ] });
-assert.equal(r3.meses[2].salarios, 1000);   // mar: só o desligado (mês do desligamento conta)
-assert.equal(r3.meses[3].salarios, 0);      // abr: ninguém
-assert.equal(r3.meses[5].salarios, 2000);   // jun: o novo
+assert.equal(r3.months[2].salaries, 1000);   // Mar: only the terminated one (the termination month counts)
+assert.equal(r3.months[3].salaries, 0);      // Apr: nobody
+assert.equal(r3.months[5].salaries, 2000);   // Jun: the new hire
+
+// AC4: a school with no children on file gets EXACTLY the same revenue as before Loop 2.
+const baseWithEntries = { ...base, entries: [] };
+const noChildren = calculateSchool({ ...baseWithEntries, children: [], schoolDays: [] });
+const noNewParams = calculateSchool(baseWithEntries); // doesn't even pass the new parameters
+assert.deepEqual(noChildren, noNewParams);
+assert.equal(noChildren.months[2].revenue, 100); // the manual revenue (without follows_calendar) still counts
+
+// AC1/AC4b: with public-slot children on file, the manual "follows calendar" revenue stops
+// counting (avoids double-counting) and the derived one takes over: 1 child, 20 school days, R$15/day = R$300.
+const schoolWithChildren = { ...baseWithEntries, school: { ...base.school, child_daily_rate: 15 },
+  revenues: [{ monthly_amount: 60000, follows_calendar: 1 }, { monthly_amount: 100, follows_calendar: 0 }],
+  children: [{ enrollment_type: 'public' }], schoolDays: Array(12).fill(20) };
+const r4 = calculateSchool(schoolWithChildren);
+assert.equal(r4.months[2].revenue, 300 + 100); // derived + the manual one that doesn't follow the calendar
+assert.equal(r4.months[2].derivedRevenue, 300);
+
+// AC3: school_days affects the derived revenue without touching factor (which still drives expenses)
+const variedSchoolDays = Array(12).fill(20); variedSchoolDays[1] = 10; // February with half the school days
+const r5 = calculateSchool({ ...schoolWithChildren, schoolDays: variedSchoolDays });
+assert.equal(r5.months[1].derivedRevenue, 150);
+assert.equal(r5.months[1].factor, factors[1]); // the transfer factor (for expenses) doesn't change
+
 console.log('ok');

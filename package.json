@@ -1,13 +1,13 @@
 {
   "name": "controle-escolas",
   "version": "1.0.0",
-  "description": "Controle financeiro de escolas infantis (contrato com a Prefeitura de Curitiba)",
+  "description": "Financial management for preschools (contract with the Curitiba city hall)",
   "type": "module",
   "scripts": {
     "db": "docker compose up -d",
     "db:down": "docker compose down",
     "start": "node --env-file-if-exists=.env server.js",
-    "test": "node test.js && node test-rescisao.js && node test-rateio.js",
+    "test": "node test.js && node test-severance.js && node test-proration.js && node test-bills.js && node test-children.js && node test-tuition.js",
     "demo": "MONGODB_URI=mongodb://127.0.0.1:27019/controle-escolas-demo node seed-demo.js && MONGODB_URI=mongodb://127.0.0.1:27019/controle-escolas-demo node server.js",
     "test:api": "node --test \"test/api/*.test.js\"",
     "backup": "sh scripts/backup.sh"
