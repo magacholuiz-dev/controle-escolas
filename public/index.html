@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Controle das Escolas</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <h1>Controle Financeiro<small>Escolas infantis · contrato Prefeitura de Curitiba</small></h1>
+      <div class="filtros">
+        <label>Escola <select id="escola"></select></label>
+        <label>Ano <input id="ano" type="number" min="2020" max="2100"></label>
+      </div>
+      <nav id="abas" style="width:100%"></nav>
+    </div>
+  </header>
+  <main id="conteudo" class="wrap"></main>
+  <script src="app.js" type="module"></script>
+</body>
+</html>
