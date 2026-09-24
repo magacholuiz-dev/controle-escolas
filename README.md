@@ -1,7 +1,8 @@
 # Controle Financeiro das Escolas
 
-Local app to track cash in/out, provisions and profit for two preschools with a contract with the
-Curitiba city hall (the transfer is only paid in months with classes).
+App to track cash in/out, provisions and profit for two preschools with a contract with the
+Curitiba city hall (the transfer is only paid in months with classes). Requires login: the owner
+sees both schools, each director only her own.
 
 ## Run it
 
@@ -22,8 +23,12 @@ The default is `mongodb://127.0.0.1:27019/controle-escolas`. Data lives in the D
 `controle_escolas_mongo_data`; for backups use `npm run backup`.
 To restore: `sh scripts/restore.sh backups/FILE.gz [target-database]`.
 
-The server only listens on `127.0.0.1` (`LISTEN_HOST` changes that). Don't expose it to the
-network: there's no login yet.
+The server only listens on `127.0.0.1` (`LISTEN_HOST` changes that) — put a reverse proxy in front
+for HTTPS before exposing it beyond this computer, and set `COOKIE_SECURE=1` once it's behind one.
+
+**First login**: with no users yet, set `SEED_OWNER_EMAIL`/`SEED_OWNER_PASSWORD` (see
+`.env.example`) before the very first boot — that creates the owner account. After that, the owner
+creates every director from the "Usuários" tab; there's no self-registration.
 
 ## How it works
 
@@ -68,6 +73,11 @@ network: there's no login yet.
   Each transaction is matched to an open bill or tuition charge by amount and date (within 3 days);
   confirming a match pays it for real (never automatic). A transaction with no match is posted as a
   manual entry in a category you choose. Re-importing the same file never duplicates a transaction.
+- **Login and permissions**: the owner logs in and sees both schools; each director only reaches
+  her own — every request is scoped by school, including "all schools" views. Only the owner
+  manages users (create a director, reset a password) from the "Usuários" tab. Changing a salary or
+  applying a severance is recorded in an audit log (who, when, before/after), visible to the owner.
+  6 wrong passwords in a row lock that account for 15 minutes.
 
 ## Assumptions (check these with the accountant)
 

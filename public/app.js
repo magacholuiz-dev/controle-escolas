@@ -9,17 +9,19 @@ const cls = (n) => (n < -0.005 ? 'neg' : n > 0.005 ? 'pos' : '');
 
 const api = async (method, url, body) => {
   const r = await fetch('/api/' + url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { window.location.href = '/login.html'; throw new Error('sessão expirada'); }
   if (!r.ok) throw new Error((await r.json()).error || r.statusText);
   return r.json();
 };
 
-const state = { schools: [], school: 'all', year: new Date().getFullYear(), tab: 'dashboard' };
+const state = { schools: [], school: 'all', year: new Date().getFullYear(), tab: 'dashboard', user: null };
 const TABS = [
   ['dashboard', 'Painel'], ['revenues', 'Receitas'], ['children', 'Crianças'], ['tuition', 'Mensalidades'],
   ['employees', 'Equipe'], ['expenses', 'Despesas'], ['bills', 'Contas a pagar'], ['suppliers', 'Fornecedores'],
   ['calendar', 'Calendário de repasse'], ['entries', 'Lançamentos reais'], ['statement', 'DRE'], ['metrics', 'Indicadores'],
   ['scenarios', 'Cenários'], ['bank', 'Conciliação bancária'], ['settings', 'Parâmetros'],
 ];
+const OWNER_ONLY_TABS = ['users'];
 const BILL_STATUS = { pending: ['Pendente', ''], overdue: ['Vencida', 'neg'], paid: ['Paga', 'pos'] };
 const TUITION_STATUS = { current: ['Em dia', ''], '1-30': ['Atraso 1–30 dias', 'neg'], '31-60': ['Atraso 31–60 dias', 'neg'], '60+': ['Atraso 60+ dias', 'neg'], paid: ['Paga', 'pos'] };
 
@@ -688,6 +690,74 @@ const views = {
     wrap.append(t); root.append(card('Movimentos importados', list.length ? '' : 'Nenhum movimento importado ainda.', null, wrap));
   },
 
+  async users(root) {
+    root.innerHTML = '<p class="note">Só a dona gerencia usuários. Cada diretora só acessa a(s) escola(s) marcadas para ela. Trocar a senha aqui não exige a senha antiga.</p>';
+    const [users, auditLog] = await Promise.all([api('GET', 'users'), api('GET', 'audit')]);
+    const wrap = document.createElement('div'); wrap.className = 'table-wrap';
+    const t = document.createElement('table');
+    t.innerHTML = `<tr><th>E-mail</th><th>Papel</th><th>Escolas</th><th></th></tr>${users.map((u) => `
+      <tr>
+        <td>${u.email}</td>
+        <td>${u.role === 'owner' ? 'Dona (todas)' : 'Diretora'}</td>
+        <td>${u.school_ids.map((id) => state.schools.find((s) => s.id === id)?.name || id).join(', ') || '—'}</td>
+        <td class="actions">
+          <button class="sec" data-reset="${u.id}">Nova senha</button>
+          ${u.id !== state.user.id ? `<button class="sec" data-del="${u.id}">Excluir</button>` : ''}
+        </td>
+      </tr>`).join('')}`;
+    t.onclick = async (e) => {
+      const resetId = e.target.dataset.reset;
+      const delId = e.target.dataset.del;
+      if (resetId) {
+        const password = prompt('Nova senha (mínimo 8 caracteres):');
+        if (password === null) return;
+        await api('PUT', `users/${resetId}`, { password }); alert('Senha alterada.');
+      }
+      if (delId) {
+        if (!confirm('Excluir este usuário? O acesso é revogado imediatamente.')) return;
+        await api('DELETE', `users/${delId}`); render();
+      }
+    };
+    wrap.append(t); root.append(card('Usuários', '', null, wrap));
+
+    const form = document.createElement('div'); form.className = 'add';
+    const emailInput = document.createElement('input'); emailInput.type = 'email'; emailInput.placeholder = 'E-mail';
+    const passwordInput = document.createElement('input'); passwordInput.type = 'password'; passwordInput.placeholder = 'Senha (mín. 8 caracteres)';
+    const roleSel = field({ type: 'select', options: [['director', 'Diretora'], ['owner', 'Dona']] }, 'director', () => showSchools());
+    const schoolsWrap = document.createElement('span');
+    let checked = new Set();
+    function showSchools() {
+      schoolsWrap.innerHTML = '';
+      schoolsWrap.style.display = roleSel.value === 'director' ? 'inline' : 'none';
+      for (const s of state.schools) {
+        const lab = document.createElement('label'); lab.style.display = 'inline-block'; lab.style.marginLeft = '8px';
+        const cb = document.createElement('input'); cb.type = 'checkbox';
+        cb.onchange = () => { if (cb.checked) checked.add(s.id); else checked.delete(s.id); };
+        lab.append(cb, ' ' + s.name); schoolsWrap.append(lab);
+      }
+    }
+    showSchools();
+    const addBtn = document.createElement('button'); addBtn.textContent = 'Criar usuário';
+    addBtn.onclick = async () => {
+      try {
+        await api('POST', 'users', { email: emailInput.value, password: passwordInput.value, role: roleSel.value, school_ids: [...checked] });
+        render();
+      } catch (e) { alert(e.message); }
+    };
+    form.append(emailInput, passwordInput, roleSel, schoolsWrap, addBtn);
+    root.append(card('Criar usuário', 'A diretora precisa de ao menos uma escola marcada', null, form));
+
+    if (auditLog.length) {
+      const auditWrap = document.createElement('div'); auditWrap.className = 'table-wrap';
+      const at = document.createElement('table');
+      at.innerHTML = `<tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Antes</th><th>Depois</th></tr>${auditLog.slice(0, 100).map((a) => `
+        <tr><td>${new Date(a.at).toLocaleString('pt-BR')}</td><td>${a.user_email}</td><td>${a.action}</td>
+        <td>${a.before ? JSON.stringify(a.before) : '—'}</td><td>${a.after ? JSON.stringify(a.after) : '—'}</td></tr>`).join('')}`;
+      auditWrap.append(at);
+      root.append(card('Auditoria (últimas 100)', '', null, auditWrap));
+    }
+  },
+
   async settings(root) {
     root.innerHTML = '<p class="note">Percentuais por escola. <b>Encargos</b>: FGTS 8% (Simples Nacional); se a escola não for do Simples, some INSS patronal/RAT/terceiros. <b>Imposto</b>: alíquota efetiva sobre a receita — confirme com a contabilidade. <b>Saldo inicial</b>: caixa em 1º de janeiro. <b>Crianças matriculadas</b>: campo manual, usado para dividir compras proporcionalmente entre as escolas (independente da aba Crianças). <b>Capacidade</b>: vagas totais, para a ocupação. <b>Valor por criança-dia (Prefeitura)</b>: assim que houver ao menos uma criança de vaga da Prefeitura cadastrada, a receita passa a ser crianças × dias letivos × esse valor, no lugar da receita manual "segue calendário". <b>Rotatividade anual</b>: liga a reserva mensal de rescisão (0% = desligada); é uma provisão no lucro, nunca sai do caixa até alguém realmente sair — confirme o número real com a contabilidade.</p>';
     const schools = await api('GET', 'schools');
@@ -900,9 +970,25 @@ async function loadSchools() {
   render();
 }
 
-$('#tabs').innerHTML = TABS.map(([k, n]) => `<button data-tab="${k}">${n}</button>`).join('');
-$('#tabs').onclick = (e) => { if (e.target.dataset.tab) { state.tab = e.target.dataset.tab; render(); } };
-$('#school').onchange = (e) => { state.school = e.target.value; render(); };
-$('#year').value = state.year;
-$('#year').onchange = (e) => { state.year = Number(e.target.value); render(); };
-loadSchools();
+function renderTabs() {
+  const tabs = state.user?.role === 'owner' ? [...TABS, ['users', 'Usuários']] : TABS;
+  $('#tabs').innerHTML = tabs.map(([k, n]) => `<button data-tab="${k}">${n}</button>`).join('');
+}
+
+async function boot() {
+  const me = await api('GET', 'auth/me');
+  state.user = me.user;
+  const userInfo = document.createElement('div'); userInfo.className = 'filters';
+  userInfo.innerHTML = `<span class="note" style="align-self:center">${state.user.email} · ${state.user.role === 'owner' ? 'dona' : 'diretora'}</span>`;
+  const logout = document.createElement('button'); logout.className = 'sec'; logout.textContent = 'Sair';
+  logout.onclick = async () => { await api('POST', 'auth/logout'); window.location.href = '/login.html'; };
+  userInfo.append(logout);
+  $('header .wrap').append(userInfo);
+  renderTabs();
+  $('#tabs').onclick = (e) => { if (e.target.dataset.tab) { state.tab = e.target.dataset.tab; render(); } };
+  $('#school').onchange = (e) => { state.school = e.target.value; render(); };
+  $('#year').value = state.year;
+  $('#year').onchange = (e) => { state.year = Number(e.target.value); render(); };
+  loadSchools();
+}
+boot();

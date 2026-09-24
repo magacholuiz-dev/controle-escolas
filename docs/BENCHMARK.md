@@ -44,7 +44,8 @@ estimated when not given. Always confirm with the accountant before paying.
    Our own suggestion, not seen in the competitors.
 7. ~~Export for the accountant~~ — done in Loop 9, as CSV (not XLSX/PDF; see carry-overs).
    Attaching receipts and invoices is still not done.
-8. **Users and permissions**, so the front office and the accountant can access it without editing
-   everything.
+8. ~~Users and permissions~~ — done in Loop 8: login, an owner role (both schools) and a director
+   role (scoped to one school), an audit log. A read-only accountant role and sensitive-field
+   masking are cut for now — see the roadmap carry-overs.
 9. ~~Bank reconciliation (importing an OFX statement)~~ — done in Loop 10 (OFX only; tested against a
    hand-built file, not a real bank export — see the roadmap carry-overs).

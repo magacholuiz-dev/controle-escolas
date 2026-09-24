@@ -1,7 +1,8 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
-import { connect, ensureCalendar, Calendar, School, Employee, Revenue, Expense, Entry, Supplier, Bill, Child, Tuition, Scenario, BankTransaction } from './db.js';
+import { connect, ensureCalendar, Calendar, School, Employee, Revenue, Expense, Entry, Supplier, Bill, Child, Tuition, Scenario, BankTransaction, User, Session, AuditLog } from './db.js';
+import { hashPassword, verifyPassword, createSessionToken, isLocked, recordFailedAttempt, canAccessSchool } from './auth.js';
 import { calculateSchool, consolidate } from './calc.js';
 import { calculateSeverance, SEVERANCE_TYPES } from './severance.js';
 import { applyAdjustments } from './scenarios.js';
@@ -21,9 +22,106 @@ import mongoose from 'mongoose';
 import { InputError, validationMessage } from './errors.js';
 
 const PORT = Number(process.env.PORT) || 3200;
-const HOST = process.env.LISTEN_HOST || '127.0.0.1'; // this machine only, until there's a login (Loop 8)
+const HOST = process.env.LISTEN_HOST || '127.0.0.1'; // this machine (or behind a local reverse proxy) — see Loop 8's design notes
 const MAX_BODY = 1024 * 1024;
 const PUBLIC = new URL('./public', import.meta.url).pathname;
+const SESSION_TTL_HOURS = Number(process.env.SESSION_TTL_HOURS) || 24 * 7;
+const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
+
+const parseCookies = (header) => Object.fromEntries(String(header || '').split(';').filter(Boolean).map((p) => {
+  const i = p.indexOf('=');
+  return [p.slice(0, i).trim(), decodeURIComponent(p.slice(i + 1).trim())];
+}));
+const setSessionCookie = (res, token, maxAgeSeconds) => {
+  res.setHeader('Set-Cookie', `sid=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}${COOKIE_SECURE ? '; Secure' : ''}`);
+};
+const clearSessionCookie = (res) => {
+  res.setHeader('Set-Cookie', `sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${COOKIE_SECURE ? '; Secure' : ''}`);
+};
+
+async function currentUser(req) {
+  const token = parseCookies(req.headers.cookie).sid;
+  if (!token) return null;
+  const session = await Session.findOne({ token, expires_at: { $gt: new Date() } }).lean();
+  if (!session) return null;
+  const user = await User.findById(session.user_id).lean();
+  if (!user) return null;
+  return { id: String(user._id), email: user.email, role: user.role, school_ids: (user.school_ids || []).map(String) };
+}
+
+async function login({ email, password }) {
+  if (!email || !password) throw new InputError('email e senha são obrigatórios');
+  const user = await User.findOne({ email: String(email).toLowerCase().trim() });
+  if (!user) throw new InputError('email ou senha inválidos', 401);
+  if (isLocked(user)) throw new InputError('conta bloqueada temporariamente após várias tentativas erradas; tente novamente mais tarde', 423);
+  if (!verifyPassword(password, user.password_hash)) {
+    const { failed_attempts, locked_until } = recordFailedAttempt(user);
+    await User.updateOne({ _id: user._id }, { $set: { failed_attempts, locked_until } });
+    throw new InputError('email ou senha inválidos', 401);
+  }
+  if (user.failed_attempts) await User.updateOne({ _id: user._id }, { $set: { failed_attempts: 0, locked_until: null } });
+  const token = createSessionToken();
+  await Session.create({ token, user_id: user._id, expires_at: new Date(Date.now() + SESSION_TTL_HOURS * 3600000) });
+  return { token, maxAgeSeconds: SESSION_TTL_HOURS * 3600, user: { id: String(user._id), email: user.email, role: user.role, school_ids: (user.school_ids || []).map(String) } };
+}
+
+function requireSchoolAccess(user, schoolId) {
+  if (!canAccessSchool(user, schoolId)) throw new InputError('acesso não permitido a esta escola', 403);
+}
+
+// Same check, but against a raw list of allowed ids (or null = unrestricted) instead of a user
+// object — used where a function only has the caller's scope, not the full user.
+function checkAllowed(allowedIds, schoolId) {
+  if (allowedIds && !allowedIds.map(String).includes(String(schoolId))) throw new InputError('acesso não permitido a esta escola', 403);
+}
+
+async function audit(user, action, { entity = '', entity_id = null, school_id = null, before = null, after = null } = {}) {
+  await AuditLog.create({ user_email: user.email, action, entity, entity_id, school_id, before, after });
+}
+
+async function listUsers() {
+  const users = await User.find().select('-password_hash').sort('email').lean();
+  return users.map(({ _id, school_ids, ...u }) => ({ ...u, id: String(_id), school_ids: (school_ids || []).map(String) }));
+}
+
+async function createUser(actor, { email, password, role, school_ids }) {
+  if (!email || !password) throw new InputError('email e senha são obrigatórios');
+  if (!['owner', 'director'].includes(role)) throw new InputError('role deve ser owner ou director');
+  if (String(password).length < 8) throw new InputError('senha deve ter ao menos 8 caracteres');
+  const ids = role === 'director' ? (school_ids || []).map((sid) => requireId(sid, 'school_ids')) : [];
+  if (role === 'director' && !ids.length) throw new InputError('diretora precisa de ao menos uma escola');
+  const doc = await User.create({ email: String(email).toLowerCase().trim(), password_hash: hashPassword(password), role, school_ids: ids });
+  await audit(actor, 'user.create', { entity: 'User', entity_id: doc._id, after: { email: doc.email, role: doc.role, school_ids: ids } });
+  return { id: String(doc._id) };
+}
+
+async function updateUser(actor, id, { role, school_ids, password }) {
+  const user = await User.findById(id);
+  if (!user) throw new InputError('usuário não encontrado', 404);
+  const before = { role: user.role, school_ids: (user.school_ids || []).map(String) };
+  if (role !== undefined) {
+    if (!['owner', 'director'].includes(role)) throw new InputError('role deve ser owner ou director');
+    user.role = role;
+  }
+  if (school_ids !== undefined) user.school_ids = (school_ids || []).map((sid) => requireId(sid, 'school_ids'));
+  if (user.role === 'director' && !user.school_ids.length) throw new InputError('diretora precisa de ao menos uma escola');
+  if (password) {
+    if (String(password).length < 8) throw new InputError('senha deve ter ao menos 8 caracteres');
+    user.password_hash = hashPassword(password);
+  }
+  await user.save();
+  await audit(actor, 'user.update', { entity: 'User', entity_id: user._id, before, after: { role: user.role, school_ids: user.school_ids.map(String) } });
+  return { ok: true };
+}
+
+async function deleteUser(actor, id) {
+  if (String(actor.id) === String(id)) throw new InputError('não é possível excluir o próprio usuário logado');
+  const removed = await User.findOneAndDelete({ _id: id });
+  if (!removed) throw new InputError('usuário não encontrado', 404);
+  await Session.deleteMany({ user_id: removed._id });
+  await audit(actor, 'user.delete', { entity: 'User', entity_id: removed._id, before: { email: removed.email, role: removed.role } });
+  return { ok: true };
+}
 
 // Resources with a generic CRUD. `cols` is the whitelist of writable fields.
 const RESOURCES = {
@@ -128,9 +226,10 @@ async function loadSchoolInputs(school, year) {
   };
 }
 
-async function buildReport(year, schoolParam) {
-  if (schoolParam !== 'all') requireId(schoolParam, 'school');
-  const schools = await (schoolParam === 'all' ? School.find().sort('_id') : School.find({ _id: schoolParam })).lean();
+async function buildReport(year, schoolParam, allowedIds = null) {
+  if (schoolParam !== 'all') { requireId(schoolParam, 'school'); checkAllowed(allowedIds, schoolParam); }
+  const filter = schoolParam === 'all' ? (allowedIds ? { _id: { $in: allowedIds } } : {}) : { _id: schoolParam };
+  const schools = await School.find(filter).sort('_id').lean();
   const results = await Promise.all(schools.map(async (school) => calculateSchool(await loadSchoolInputs(school, year))));
   if (schoolParam !== 'all') return results[0];
   return { ...consolidate(results, schools.reduce((s, e) => s + e.initial_balance, 0)), bySchool: schools.map((e, i) => ({ id: String(e._id), name: e.name, ...results[i].totals })) };
@@ -213,8 +312,8 @@ async function undoBillPayment(id) {
   return { ok: true };
 }
 
-async function billsPanel(schoolParam, days) {
-  const filter = schoolParam === 'all' ? {} : { school_id: requireId(schoolParam, 'school') };
+async function billsPanel(schoolParam, days, allowedIds = null) {
+  const filter = schoolParam === 'all' ? (allowedIds ? { school_id: { $in: allowedIds } } : {}) : { school_id: requireId(schoolParam, 'school') };
   const [bills, schools] = await Promise.all([Bill.find(filter).lean(), School.find().select('name').lean()]);
   const names = new Map(schools.map((e) => [String(e._id), e.name]));
   const today = new Date().toISOString().slice(0, 10);
@@ -266,8 +365,8 @@ async function undoTuitionPayment(id) {
   return { ok: true };
 }
 
-async function tuitionPanel(schoolParam) {
-  const schoolFilter = schoolParam === 'all' ? {} : { school_id: requireId(schoolParam, 'school') };
+async function tuitionPanel(schoolParam, allowedIds = null) {
+  const schoolFilter = schoolParam === 'all' ? (allowedIds ? { school_id: { $in: allowedIds } } : {}) : { school_id: requireId(schoolParam, 'school') };
   const [charges, schools, children] = await Promise.all([
     Tuition.find(schoolFilter).lean(),
     School.find().select('name').lean(),
@@ -292,9 +391,10 @@ async function tuitionPanel(schoolParam) {
   return { today, totalDue: delinquencyInfo.totalDue, totalOverdue: delinquencyInfo.totalOverdue, delinquencyPct: delinquencyInfo.pct, debtors };
 }
 
-async function severanceInput(q) {
+async function severanceInput(q, allowedIds) {
   const employee = await Employee.findById(requireId(q.get('employee_id'), 'employee_id')).lean();
   if (!employee) throw new InputError('colaborador não encontrado', 404);
+  checkAllowed(allowedIds, employee.school_id);
   if (!employee.hire_date) throw new InputError('cadastre a data de admissão do colaborador');
   return { employee, input: {
     salary: employee.salary, hire_date: employee.hire_date, termination_date: q.get('date'), type: q.get('type'),
@@ -303,29 +403,31 @@ async function severanceInput(q) {
   } };
 }
 
-async function simulateSeverance(q) {
-  const { employee, input } = await severanceInput(q);
+async function simulateSeverance(q, allowedIds) {
+  const { employee, input } = await severanceInput(q, allowedIds);
   return { employee: { id: String(employee._id), name: employee.name }, ...calculateSeverance(input) };
 }
 
 // Terminates the employee and posts the severance cost as a one-off expense in the month.
-async function applySeverance(body) {
+async function applySeverance(actor, body, allowedIds) {
   const q = new URLSearchParams(body);
-  const { employee, input } = await severanceInput(q);
+  const { employee, input } = await severanceInput(q, allowedIds);
   const result = calculateSeverance(input);
   await Employee.updateOne({ _id: employee._id }, { $set: { active: 0, termination_date: input.termination_date } });
   await Entry.create({
     school_id: employee.school_id, date: input.termination_date, type: 'expense', category: 'Rescisão', one_off: 1,
     description: `${SEVERANCE_TYPES[input.type]} — ${employee.name}`, amount: result.schoolCost,
   });
+  await audit(actor, 'severance.apply', { entity: 'Employee', entity_id: employee._id, school_id: employee.school_id, before: { active: true }, after: { active: false, type: input.type, schoolCost: result.schoolCost } });
   return { ok: true, schoolCost: result.schoolCost };
 }
 
 // Imports an OFX statement: parses it, drops transactions already imported (by fingerprint), and
 // suggests a match (open bill or open tuition charge) for every new one. Nothing is paid yet —
 // suggestions are only confirmed by a human via `confirmBankTransaction`.
-async function importBankStatement({ school_id, ofx }) {
+async function importBankStatement({ school_id, ofx }, allowedIds) {
   requireId(school_id, 'school_id');
+  checkAllowed(allowedIds, school_id);
   if (typeof ofx !== 'string' || !ofx) throw new InputError('ofx (texto do arquivo) é obrigatório');
   if (!(await School.exists({ _id: school_id }))) throw new InputError('escola não encontrada', 404);
   const parsed = parseOfx(ofx);
@@ -349,17 +451,19 @@ async function importBankStatement({ school_id, ofx }) {
   return { imported: fresh.length, duplicates: withFingerprint.length - fresh.length, ledgerBalance: parsed.ledgerBalance, ledgerDate: parsed.ledgerDate };
 }
 
-async function listBankTransactions(schoolParam) {
-  const filter = schoolParam === 'all' ? {} : { school_id: requireId(schoolParam, 'school') };
+async function listBankTransactions(schoolParam, allowedIds) {
+  if (schoolParam !== 'all') checkAllowed(allowedIds, requireId(schoolParam, 'school'));
+  const filter = schoolParam === 'all' ? (allowedIds ? { school_id: { $in: allowedIds } } : {}) : { school_id: schoolParam };
   const docs = await BankTransaction.find(filter).sort({ date: -1, _id: -1 }).lean();
   return docs.map(({ _id, ...t }) => ({ ...t, id: String(_id) }));
 }
 
 // Confirms a transaction against a bill or tuition charge (its suggestion, or a different one the
 // human picked), paying it for real, or clears the suggestion so it's treated as unmatched.
-async function confirmBankTransaction(id, { kind, target_id }) {
+async function confirmBankTransaction(id, { kind, target_id }, allowedIds) {
   const tx = await BankTransaction.findById(id);
   if (!tx) throw new InputError('transação não encontrada', 404);
+  checkAllowed(allowedIds, tx.school_id);
   if (tx.reconciled) throw new InputError('esta transação já foi conciliada');
   const useKind = kind ?? tx.suggested_kind;
   const useId = target_id ?? tx.suggested_id;
@@ -375,9 +479,10 @@ async function confirmBankTransaction(id, { kind, target_id }) {
 }
 
 // Posts a plain entry for a transaction that doesn't match any open bill/tuition charge.
-async function manualBankEntry(id, { category, description }) {
+async function manualBankEntry(id, { category, description }, allowedIds) {
   const tx = await BankTransaction.findById(id);
   if (!tx) throw new InputError('transação não encontrada', 404);
+  checkAllowed(allowedIds, tx.school_id);
   if (tx.reconciled) throw new InputError('esta transação já foi conciliada');
   const entry = await Entry.create({
     school_id: tx.school_id, date: tx.date, type: tx.amount < 0 ? 'expense' : 'revenue',
@@ -392,10 +497,52 @@ async function api(req, res, url) {
   const [resource, seg2, seg3] = url.pathname.split('/').filter(Boolean).slice(1);
   const q = url.searchParams;
 
-  if (resource === 'report') return json(res, 200, await buildReport(requireYear(q.get('year') ?? new Date().getFullYear()), q.get('school') || 'all'));
+  if (resource === 'auth') {
+    if (seg2 === 'login' && req.method === 'POST') {
+      const { token, maxAgeSeconds, user } = await login(await readBody(req));
+      setSessionCookie(res, token, maxAgeSeconds);
+      return json(res, 200, { user });
+    }
+    if (seg2 === 'logout' && req.method === 'POST') {
+      const token = parseCookies(req.headers.cookie).sid;
+      if (token) await Session.deleteOne({ token });
+      clearSessionCookie(res);
+      return json(res, 200, { ok: true });
+    }
+    if (seg2 === 'me' && req.method === 'GET') {
+      const user = await currentUser(req);
+      if (!user) return json(res, 401, { error: 'sessão inválida ou ausente' });
+      return json(res, 200, { user });
+    }
+    return json(res, 404, { error: 'rota não encontrada' });
+  }
+
+  const user = await currentUser(req);
+  if (!user) return json(res, 401, { error: 'sessão inválida ou ausente' });
+  const allowedIds = user.role === 'owner' ? null : user.school_ids;
+
+  if (resource === 'users') {
+    if (user.role !== 'owner') return json(res, 403, { error: 'só a dona gerencia usuários' });
+    if (req.method === 'GET') return json(res, 200, await listUsers());
+    if (req.method === 'POST') return json(res, 201, await createUser(user, await readBody(req)));
+    if (seg2 && req.method === 'PUT') return json(res, 200, await updateUser(user, requireId(seg2), await readBody(req)));
+    if (seg2 && req.method === 'DELETE') return json(res, 200, await deleteUser(user, requireId(seg2)));
+    return json(res, 405, { error: 'método não suportado' });
+  }
+
+  if (resource === 'audit' && req.method === 'GET') {
+    if (user.role !== 'owner') return json(res, 403, { error: 'só a dona vê a auditoria' });
+    const filter = {};
+    if (q.get('entity_id')) filter.entity_id = requireId(q.get('entity_id'), 'entity_id');
+    if (q.get('school_id')) filter.school_id = requireId(q.get('school_id'), 'school_id');
+    const logs = await AuditLog.find(filter).sort({ at: -1, _id: -1 }).limit(500).lean();
+    return json(res, 200, logs.map(({ _id, ...l }) => ({ ...l, id: String(_id) })));
+  }
+
+  if (resource === 'report') return json(res, 200, await buildReport(requireYear(q.get('year') ?? new Date().getFullYear()), q.get('school') || 'all', allowedIds));
 
   if (resource === 'statement' && req.method === 'GET') {
-    const report = await buildReport(requireYear(q.get('year') ?? new Date().getFullYear()), q.get('school') || 'all');
+    const report = await buildReport(requireYear(q.get('year') ?? new Date().getFullYear()), q.get('school') || 'all', allowedIds);
     return json(res, 200, buildStatement(report));
   }
 
@@ -407,16 +554,17 @@ async function api(req, res, url) {
 
     if (schoolParam !== 'all') {
       requireId(schoolParam, 'school');
+      checkAllowed(allowedIds, schoolParam);
       const [report, activeChildren] = await Promise.all([buildReport(year, schoolParam), activeCount(schoolParam)]);
       return json(res, 200, buildMetrics({ report, activeChildren }));
     }
 
-    const schools = await School.find().sort('_id').lean();
+    const schools = await School.find(allowedIds ? { _id: { $in: allowedIds } } : {}).sort('_id').lean();
     const perSchool = await Promise.all(schools.map(async (s) => {
       const [report, activeChildren] = await Promise.all([buildReport(year, String(s._id)), activeCount(s._id)]);
       return { id: String(s._id), name: s.name, ...buildMetrics({ report, activeChildren }) };
     }));
-    const consolidatedReport = await buildReport(year, 'all');
+    const consolidatedReport = await buildReport(year, 'all', allowedIds);
     const totalActiveChildren = perSchool.reduce((s, x) => s + x.activeChildren, 0);
     const consolidated = buildMetrics({ report: consolidatedReport, activeChildren: totalActiveChildren });
     const rows = { costPerChild: 'lower', revenuePerChild: 'higher', payrollOverRevenue: 'lower', breakEven: 'lower', margin: 'higher' };
@@ -428,6 +576,7 @@ async function api(req, res, url) {
   if (resource === 'alerts' && req.method === 'GET') {
     const year = requireYear(q.get('year') ?? new Date().getFullYear());
     const schoolId = requireId(q.get('school_id'), 'school_id');
+    checkAllowed(allowedIds, schoolId);
     const today = new Date().toISOString().slice(0, 10);
     const [report, employees, bills] = await Promise.all([
       buildReport(year, schoolId),
@@ -441,6 +590,7 @@ async function api(req, res, url) {
   if (resource === 'export') {
     if (req.method !== 'GET') return json(res, 405, { error: 'método não suportado' });
     const schoolId = requireId(q.get('school_id'), 'school_id');
+    checkAllowed(allowedIds, schoolId);
 
     if (seg2 === 'payroll') {
       const period = q.get('period');
@@ -468,24 +618,25 @@ async function api(req, res, url) {
   }
 
   if (resource === 'bills' && (seg2 === 'generate' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
-    if (seg2 === 'generate' && req.method === 'POST') return json(res, 201, await generateBills(await readBody(req)));
-    if (seg2 === 'panel' && req.method === 'GET') return json(res, 200, await billsPanel(q.get('school') || 'all', Number(q.get('days')) || 7));
-    if (seg3 === 'pay' && req.method === 'POST') return json(res, 200, await payBill(requireId(seg2), await readBody(req)));
-    if (seg3 === 'undo' && req.method === 'POST') return json(res, 200, await undoBillPayment(requireId(seg2)));
+    if (seg2 === 'generate' && req.method === 'POST') { const body = await readBody(req); checkAllowed(allowedIds, requireId(body.school_id, 'school_id')); return json(res, 201, await generateBills(body)); }
+    if (seg2 === 'panel' && req.method === 'GET') { const schoolParam = q.get('school') || 'all'; if (schoolParam !== 'all') checkAllowed(allowedIds, requireId(schoolParam, 'school')); return json(res, 200, await billsPanel(schoolParam, Number(q.get('days')) || 7, allowedIds)); }
+    if (seg3 === 'pay' && req.method === 'POST') { const bill = await Bill.findById(requireId(seg2)).select('school_id').lean(); if (!bill) return json(res, 404, { error: 'conta não encontrada' }); checkAllowed(allowedIds, bill.school_id); return json(res, 200, await payBill(seg2, await readBody(req))); }
+    if (seg3 === 'undo' && req.method === 'POST') { const bill = await Bill.findById(requireId(seg2)).select('school_id').lean(); if (!bill) return json(res, 404, { error: 'conta não encontrada' }); checkAllowed(allowedIds, bill.school_id); return json(res, 200, await undoBillPayment(seg2)); }
     return json(res, 405, { error: 'método não suportado' });
   }
 
   if (resource === 'tuition' && (seg2 === 'generate' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
-    if (seg2 === 'generate' && req.method === 'POST') return json(res, 201, await generateTuition(await readBody(req)));
-    if (seg2 === 'panel' && req.method === 'GET') return json(res, 200, await tuitionPanel(q.get('school') || 'all'));
-    if (seg3 === 'pay' && req.method === 'POST') return json(res, 200, await payTuition(requireId(seg2), await readBody(req)));
-    if (seg3 === 'undo' && req.method === 'POST') return json(res, 200, await undoTuitionPayment(requireId(seg2)));
+    if (seg2 === 'generate' && req.method === 'POST') { const body = await readBody(req); checkAllowed(allowedIds, requireId(body.school_id, 'school_id')); return json(res, 201, await generateTuition(body)); }
+    if (seg2 === 'panel' && req.method === 'GET') { const schoolParam = q.get('school') || 'all'; if (schoolParam !== 'all') checkAllowed(allowedIds, requireId(schoolParam, 'school')); return json(res, 200, await tuitionPanel(schoolParam, allowedIds)); }
+    if (seg3 === 'pay' && req.method === 'POST') { const charge = await Tuition.findById(requireId(seg2)).select('school_id').lean(); if (!charge) return json(res, 404, { error: 'mensalidade não encontrada' }); checkAllowed(allowedIds, charge.school_id); return json(res, 200, await payTuition(seg2, await readBody(req))); }
+    if (seg3 === 'undo' && req.method === 'POST') { const charge = await Tuition.findById(requireId(seg2)).select('school_id').lean(); if (!charge) return json(res, 404, { error: 'mensalidade não encontrada' }); checkAllowed(allowedIds, charge.school_id); return json(res, 200, await undoTuitionPayment(seg2)); }
     return json(res, 405, { error: 'método não suportado' });
   }
 
   if (resource === 'children' && seg2 === 'occupancy') {
     if (req.method !== 'GET') return json(res, 405, { error: 'método não suportado' });
     const schoolId = requireId(q.get('school_id'), 'school_id');
+    checkAllowed(allowedIds, schoolId);
     const school = await School.findById(schoolId).select('capacity').lean();
     if (!school) return json(res, 404, { error: 'escola não encontrada' });
     const children = await Child.find({ school_id: schoolId }).select('enrollment_date exit_date').lean();
@@ -494,14 +645,16 @@ async function api(req, res, url) {
 
   if (resource === 'scenarios' && seg2 === 'simulate') {
     if (req.method !== 'POST') return json(res, 405, { error: 'método não suportado' });
-    return json(res, 200, await simulateScenario(await readBody(req)));
+    const body = await readBody(req);
+    if (body.school_id) checkAllowed(allowedIds, requireId(body.school_id, 'school_id'));
+    return json(res, 200, await simulateScenario(body));
   }
 
   if (resource === 'bank') {
-    if (seg2 === 'import' && req.method === 'POST') return json(res, 201, await importBankStatement(await readBody(req)));
-    if (seg2 === 'list' && req.method === 'GET') return json(res, 200, await listBankTransactions(q.get('school') || 'all'));
-    if (seg3 === 'confirm' && req.method === 'POST') return json(res, 200, await confirmBankTransaction(requireId(seg2), await readBody(req)));
-    if (seg3 === 'manual' && req.method === 'POST') return json(res, 200, await manualBankEntry(requireId(seg2), await readBody(req)));
+    if (seg2 === 'import' && req.method === 'POST') return json(res, 201, await importBankStatement(await readBody(req), allowedIds));
+    if (seg2 === 'list' && req.method === 'GET') return json(res, 200, await listBankTransactions(q.get('school') || 'all', allowedIds));
+    if (seg3 === 'confirm' && req.method === 'POST') return json(res, 200, await confirmBankTransaction(requireId(seg2), await readBody(req), allowedIds));
+    if (seg3 === 'manual' && req.method === 'POST') return json(res, 200, await manualBankEntry(requireId(seg2), await readBody(req), allowedIds));
     return json(res, 405, { error: 'método não suportado' });
   }
 
@@ -509,6 +662,7 @@ async function api(req, res, url) {
 
   if (resource === 'calendar') {
     const schoolId = requireId(q.get('school_id'), 'school_id');
+    checkAllowed(allowedIds, schoolId);
     const year = requireYear(q.get('year'));
     if (req.method === 'PUT') {
       const { month, factor, closed, school_days } = await readBody(req);
@@ -526,20 +680,28 @@ async function api(req, res, url) {
     return json(res, 200, await Calendar.find({ school_id: schoolId, year }).sort('month').select('month factor closed school_days -_id').lean());
   }
 
-  if (resource === 'split' && req.method === 'POST') return json(res, 201, await splitAmount(await readBody(req)));
+  if (resource === 'split' && req.method === 'POST') {
+    if (user.role !== 'owner') throw new InputError('só a dona pode dividir uma compra entre as escolas', 403);
+    return json(res, 201, await splitAmount(await readBody(req)));
+  }
 
   if (resource === 'severance') {
-    if (req.method === 'GET') return json(res, 200, await simulateSeverance(q));
-    if (req.method === 'POST') return json(res, 201, await applySeverance(await readBody(req)));
+    if (req.method === 'GET') return json(res, 200, await simulateSeverance(q, allowedIds));
+    if (req.method === 'POST') return json(res, 201, await applySeverance(user, await readBody(req), allowedIds));
   }
 
   const resourceDef = RESOURCES[resource];
   if (!resourceDef) return json(res, 404, { error: 'recurso não encontrado' });
   const { model, cols } = resourceDef;
+  const scoped = !['schools', 'suppliers'].includes(resource);
 
   if (req.method === 'GET') {
     const filter = {};
-    if (!['schools', 'suppliers'].includes(resource) && q.get('school_id')) filter.school_id = requireId(q.get('school_id'), 'school_id');
+    if (resource === 'schools') { if (allowedIds) filter._id = { $in: allowedIds }; }
+    else if (scoped) {
+      if (q.get('school_id')) { checkAllowed(allowedIds, requireId(q.get('school_id'), 'school_id')); filter.school_id = q.get('school_id'); }
+      else if (allowedIds) filter.school_id = { $in: allowedIds };
+    }
     if (resource === 'entries' && q.get('year')) filter.date = { $regex: `^${requireYear(q.get('year'))}-` };
     if (['bills', 'tuition'].includes(resource) && q.get('period')) filter.period = q.get('period');
     const hasDueDate = ['bills', 'tuition'].includes(resource);
@@ -553,26 +715,33 @@ async function api(req, res, url) {
     })));
   }
   if (req.method === 'POST') {
+    if (resource === 'schools' && user.role !== 'owner') throw new InputError('só a dona pode cadastrar uma nova escola', 403);
     const data = pickFields(cols, await readBody(req));
+    if (scoped && data.school_id) checkAllowed(allowedIds, requireId(data.school_id, 'school_id'));
     await resourceDef.validate?.(data);
     const doc = await model.create(data);
+    if (resource === 'employees') await audit(user, 'employee.create', { entity: 'Employee', entity_id: doc._id, school_id: doc.school_id, after: { name: doc.name, salary: doc.salary } });
     return json(res, 201, { id: String(doc._id) });
   }
   if (req.method === 'PUT' && id) {
+    if (resource === 'schools') checkAllowed(allowedIds, id);
     const data = pickFields(cols, await readBody(req));
     const existing = await model.findById(id).lean();
     if (!existing) return json(res, 404, { error: 'não encontrado' });
+    if (scoped) { checkAllowed(allowedIds, existing.school_id); if (data.school_id) checkAllowed(allowedIds, requireId(data.school_id, 'school_id')); }
     await resourceDef.validate?.(data, existing);
     await model.updateOne({ _id: id }, { $set: data }, { runValidators: true });
+    if (resource === 'employees' && 'salary' in data && data.salary !== existing.salary) {
+      await audit(user, 'employee.update', { entity: 'Employee', entity_id: id, school_id: existing.school_id, before: { salary: existing.salary }, after: { salary: data.salary } });
+    }
     return json(res, 200, { ok: true });
   }
   if (req.method === 'DELETE' && id) {
     if (resource === 'schools') return json(res, 400, { error: 'não é possível excluir escolas' });
-    if (q.get('group')) {
-      const doc = await model.findById(id);
-      if (!doc) return json(res, 404, { error: 'não encontrado' });
-      if (doc.group_id) return json(res, 200, { ok: true, removed: (await model.deleteMany({ group_id: doc.group_id })).deletedCount });
-    }
+    const doc = await model.findById(id);
+    if (!doc) return json(res, 404, { error: 'não encontrado' });
+    if (scoped) checkAllowed(allowedIds, doc.school_id);
+    if (q.get('group') && doc.group_id) return json(res, 200, { ok: true, removed: (await model.deleteMany({ group_id: doc.group_id })).deletedCount });
     const removedDoc = await model.findOneAndDelete({ _id: id });
     if (!removedDoc) return json(res, 404, { error: 'não encontrado' });
     return json(res, 200, { ok: true });
@@ -587,6 +756,10 @@ export function createApp() {
     const url = new URL(req.url, 'http://localhost');
     try {
       if (url.pathname.startsWith('/api/')) return await api(req, res, url);
+      if (url.pathname === '/' && !(await currentUser(req))) {
+        res.writeHead(302, { Location: '/login.html' });
+        return res.end();
+      }
       const rel = normalize(url.pathname === '/' ? '/index.html' : url.pathname);
       const filePath = join(PUBLIC, rel);
       if (rel.includes('..') || !filePath.startsWith(PUBLIC)) return json(res, 400, { error: 'caminho inválido' });

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { hashPassword } from './auth.js';
 
 const { Schema } = mongoose;
 export const MONGODB_URI = process.env.MONGODB_URI ?? 'mongodb://127.0.0.1:27019/controle-escolas';
@@ -160,6 +161,35 @@ export const Scenario = mongoose.model('Scenario', new Schema({
   adjustments: { type: Schema.Types.Mixed, default: [] }, // free-form list, validated by scenarios.js, never touches other collections
 }, schemaOptions));
 
+export const User = mongoose.model('User', new Schema({
+  email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+  password_hash: { type: String, required: true },
+  role: { type: String, enum: ['owner', 'director'], required: true },
+  school_ids: [{ type: Schema.Types.ObjectId, ref: 'School' }], // ignored for role = owner
+  failed_attempts: { type: Number, default: 0 },
+  locked_until: { type: String, default: null },
+}, {
+  ...schemaOptions,
+  toJSON: { virtuals: true, transform: (_, o) => { delete o._id; delete o.password_hash; return o; } },
+}));
+
+export const Session = mongoose.model('Session', new Schema({
+  token: { type: String, required: true, unique: true, index: true },
+  user_id: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+  expires_at: { type: Date, required: true },
+}, schemaOptions));
+
+export const AuditLog = mongoose.model('AuditLog', new Schema({
+  user_email: { type: String, required: true },
+  action: { type: String, required: true }, // e.g. 'employee.update', 'severance.apply', 'user.create'
+  entity: { type: String, default: '' },
+  entity_id: { type: Schema.Types.ObjectId, default: null },
+  school_id: { type: Schema.Types.ObjectId, default: null },
+  before: { type: Schema.Types.Mixed, default: null },
+  after: { type: Schema.Types.Mixed, default: null },
+  at: { type: Date, default: Date.now },
+}, schemaOptions));
+
 export async function ensureCalendar(schoolId, year) {
   await Calendar.bulkWrite(DEFAULT_FACTOR.map((factor, i) => ({
     updateOne: {
@@ -173,5 +203,8 @@ export async function ensureCalendar(schoolId, year) {
 export async function connect(uri = MONGODB_URI) {
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 5000 });
   if ((await School.countDocuments()) === 0) await School.create([{ name: 'Novo Mundo' }, { name: 'CIC' }]);
+  if ((await User.countDocuments()) === 0 && process.env.SEED_OWNER_EMAIL && process.env.SEED_OWNER_PASSWORD) {
+    await User.create({ email: process.env.SEED_OWNER_EMAIL, password_hash: hashPassword(process.env.SEED_OWNER_PASSWORD), role: 'owner' });
+  }
   return mongoose.connection;
 }

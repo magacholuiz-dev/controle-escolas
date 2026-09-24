@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Entrar · Controle das Escolas</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .login-wrap { max-width: 360px; margin: 15vh auto; padding: 0 16px; }
+    .login-card { padding: 28px; }
+    .login-card label { display: block; margin-top: 14px; font-size: 14px; }
+    .login-card input { width: 100%; margin-top: 4px; box-sizing: border-box; }
+    .login-card button { width: 100%; margin-top: 20px; }
+    .login-error { color: var(--neg, #c0392b); margin-top: 12px; font-size: 14px; min-height: 1.2em; }
+  </style>
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="card login-card">
+      <h1 style="margin:0 0 4px">Controle Financeiro</h1>
+      <div class="sub">Escolas infantis · contrato Prefeitura de Curitiba</div>
+      <form id="login-form">
+        <label>E-mail <input id="email" type="email" required autocomplete="username"></label>
+        <label>Senha <input id="password" type="password" required autocomplete="current-password"></label>
+        <button type="submit">Entrar</button>
+        <div class="login-error" id="error"></div>
+      </form>
+    </div>
+  </div>
+  <script type="module">
+    const form = document.getElementById('login-form');
+    const errorEl = document.getElementById('error');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errorEl.textContent = '';
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      try {
+        const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({}));
+          errorEl.textContent = r.status === 423 ? 'Conta bloqueada temporariamente por várias tentativas erradas. Tente novamente em alguns minutos.' : (body.error || 'E-mail ou senha inválidos.');
+          return;
+        }
+        window.location.href = '/';
+      } catch {
+        errorEl.textContent = 'Não foi possível conectar ao servidor.';
+      }
+    });
+  </script>
+</body>
+</html>
