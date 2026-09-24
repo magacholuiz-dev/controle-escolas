@@ -1,5 +1,11 @@
 # Deploy — Droplet (API) + Vercel (front)
 
+**Status: no ar.** Front em <https://controle-escolas.vercel.app>, API em
+`https://api-escolas.157-230-2-150.nip.io` (HTTPS via Let's Encrypt, proxy pelo Nginx Proxy
+Manager do droplet). Login inicial: e-mail da dona configurado no `.env` do droplet, senha trocável
+pela aba "Usuários" assim que logar. O passo a passo abaixo já foi executado uma vez — fica
+registrado para a próxima vez que precisar refazer (novo domínio, outro droplet, etc.).
+
 | Peça | Onde | Como |
 |---|---|---|
 | Front (`public/`) | **Vercel** | projeto `controle-escolas`, sem domínio próprio ainda — usa a URL `*.vercel.app` |
@@ -79,6 +85,10 @@ Depois, abrir a URL da Vercel, logar com o e-mail/senha do `.env` acima, e troca
 ## Pendências conhecidas
 
 - Sem domínio próprio: a API depende do nip.io (funciona, mas o IP fica visível na URL). Trocar
-  quando houver um domínio.
+  quando houver um domínio — repita o passo 3 com o novo nome e rode `vercel env rm API_BASE_URL`
+  seguido de `vercel env add API_BASE_URL production` com a nova URL, depois `vercel --prod`.
 - `SEED_OWNER_PASSWORD` do `.env` é só usada na primeira vez que o banco está vazio — depois disso,
   trocar a senha só pelo app (aba Usuários), nunca editando o `.env`.
+- A senha do Nginx Proxy Manager (porta 81) foi resetada direto no banco (`/data/database.sqlite`
+  do container `npm-app-1`, tabela `auth`) em 2026-09-24 porque tinha sido perdida — troque de novo
+  pela própria UI do NPM se quiser uma senha memorizável.
