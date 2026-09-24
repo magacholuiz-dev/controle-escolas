@@ -1,0 +1,13 @@
+# Vercel only serves the static front (public/) via vercel.json's buildCommand/outputDirectory.
+# The API runs on the droplet, not here — without this file, Vercel's zero-config detection picks
+# up server.js at the repo root and tries to run it as a serverless Function, which fails (it's a
+# long-running node:http server, not a request handler export).
+/*.js
+/docs
+/deploy
+/test
+/backups
+/docker-compose.yml
+/Dockerfile
+/README.md
+/.github
