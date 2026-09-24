@@ -27,6 +27,7 @@
       </form>
     </div>
   </div>
+  <script src="config.js"></script>
   <script type="module">
     const form = document.getElementById('login-form');
     const errorEl = document.getElementById('error');
@@ -36,7 +37,7 @@
       const email = document.getElementById('email').value;
       const password = document.getElementById('password').value;
       try {
-        const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
+        const r = await fetch((window.__API_BASE__ || '') + '/api/auth/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, password }) });
         if (!r.ok) {
           const body = await r.json().catch(() => ({}));
           errorEl.textContent = r.status === 423 ? 'Conta bloqueada temporariamente por várias tentativas erradas. Tente novamente em alguns minutos.' : (body.error || 'E-mail ou senha inválidos.');

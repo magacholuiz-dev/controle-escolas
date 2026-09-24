@@ -27,16 +27,25 @@ const MAX_BODY = 1024 * 1024;
 const PUBLIC = new URL('./public', import.meta.url).pathname;
 const SESSION_TTL_HOURS = Number(process.env.SESSION_TTL_HOURS) || 24 * 7;
 const COOKIE_SECURE = process.env.COOKIE_SECURE === '1';
+// SameSite=Strict only works when the front and the API share a site (e.g. the droplet serving
+// both, or local dev). Once the front is on a different origin (Vercel calling the droplet's API),
+// the cookie must be SameSite=None — which browsers only honor together with Secure — so this
+// follows COOKIE_SECURE instead of being its own flag.
+const COOKIE_SAMESITE = COOKIE_SECURE ? 'None' : 'Strict';
+// Exact origins from CORS_ORIGINS (comma-separated), plus every *.vercel.app preview/production
+// deploy of this project — same allowance Kivoni's API uses for its own Vercel front.
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+const isAllowedOrigin = (origin) => !!origin && (CORS_ORIGINS.includes(origin) || /^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin));
 
 const parseCookies = (header) => Object.fromEntries(String(header || '').split(';').filter(Boolean).map((p) => {
   const i = p.indexOf('=');
   return [p.slice(0, i).trim(), decodeURIComponent(p.slice(i + 1).trim())];
 }));
 const setSessionCookie = (res, token, maxAgeSeconds) => {
-  res.setHeader('Set-Cookie', `sid=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}${COOKIE_SECURE ? '; Secure' : ''}`);
+  res.setHeader('Set-Cookie', `sid=${token}; Path=/; HttpOnly; SameSite=${COOKIE_SAMESITE}; Max-Age=${maxAgeSeconds}${COOKIE_SECURE ? '; Secure' : ''}`);
 };
 const clearSessionCookie = (res) => {
-  res.setHeader('Set-Cookie', `sid=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${COOKIE_SECURE ? '; Secure' : ''}`);
+  res.setHeader('Set-Cookie', `sid=; Path=/; HttpOnly; SameSite=${COOKIE_SAMESITE}; Max-Age=0${COOKIE_SECURE ? '; Secure' : ''}`);
 };
 
 async function currentUser(req) {
@@ -754,6 +763,20 @@ const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javasc
 export function createApp() {
   return createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
+    const origin = req.headers.origin;
+    if (url.pathname.startsWith('/api/') && isAllowedOrigin(origin)) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Vary', 'Origin');
+    }
+    if (req.method === 'OPTIONS' && url.pathname.startsWith('/api/')) {
+      res.writeHead(204, {
+        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Max-Age': '600',
+      });
+      return res.end();
+    }
     try {
       if (url.pathname.startsWith('/api/')) return await api(req, res, url);
       if (url.pathname === '/' && !(await currentUser(req))) {

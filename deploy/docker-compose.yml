@@ -1,0 +1,25 @@
+name: controle-escolas
+services:
+  api:
+    image: ghcr.io/luizmagacho/controle-escolas:latest
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - mongo
+    networks:
+      - web
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - controle_escolas_mongo_data:/data/db
+    networks:
+      - web
+
+volumes:
+  controle_escolas_mongo_data:
+
+networks:
+  web:
+    external: true

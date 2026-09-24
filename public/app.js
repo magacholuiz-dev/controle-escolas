@@ -7,8 +7,11 @@ const brl0 = (n) => (n || 0).toLocaleString('pt-BR', { style: 'currency', curren
 const pct = (n) => (n * 100).toLocaleString('pt-BR', { maximumFractionDigits: 1 }) + '%';
 const cls = (n) => (n < -0.005 ? 'neg' : n > 0.005 ? 'pos' : '');
 
+const API_BASE = window.__API_BASE__ || '';
 const api = async (method, url, body) => {
-  const r = await fetch('/api/' + url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const r = await fetch(API_BASE + '/api/' + url, {
+    method, credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined,
+  });
   if (r.status === 401) { window.location.href = '/login.html'; throw new Error('sessão expirada'); }
   if (!r.ok) throw new Error((await r.json()).error || r.statusText);
   return r.json();
@@ -134,7 +137,7 @@ const MONTH_OPTIONS = [['', 'padrão da escola'], ...MONTHS.map((m, i) => [i + 1
 // the SPA away — the browser just saves the file.
 function exportButton(label, path) {
   const b = document.createElement('button'); b.className = 'sec'; b.textContent = label;
-  b.onclick = () => { window.location.href = '/api/' + path; };
+  b.onclick = () => { window.location.href = API_BASE + '/api/' + path; };
   return b;
 }
 

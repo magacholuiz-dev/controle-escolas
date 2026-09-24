@@ -23,8 +23,8 @@ export async function start() {
   await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
   const base = `http://127.0.0.1:${server.address().port}`;
 
-  const rawReq = async (method, path, body, { raw = false, cookie } = {}) => {
-    const headers = { 'Content-Type': 'application/json' };
+  const rawReq = async (method, path, body, { raw = false, cookie, headers: extraHeaders } = {}) => {
+    const headers = { 'Content-Type': 'application/json', ...extraHeaders };
     if (cookie) headers.Cookie = cookie;
     const r = await fetch(base + path, {
       method,
