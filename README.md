@@ -48,7 +48,26 @@ network: there's no login yet.
   CPF).
 - **Splitting between schools**: any expense, bill or entry can be split between Novo Mundo and CIC
   (evenly, proportional to enrollment, or by a manual percentage).
+- **Income statement (DRE)**: each expense category falls into a cost-center group (payroll,
+  operational, administrative...); the Statement tab always matches the Dashboard's profit to the
+  cent — regrouping a category only changes where it's shown, never the total.
 - **Severance**: full per-employee calculation (Brazilian CLT labor law), with termination applied.
+- **Metrics**: cost and revenue per child, payroll over revenue, and the break-even point (how many
+  children are needed to cover the fixed costs). The Metrics tab compares Novo Mundo and CIC side by
+  side, marking the winner on each row.
+- **Scenarios**: simulate a delayed city-hall transfer, hiring, firing (with a real severance cost)
+  or cutting an expense category, compared side by side against the real numbers — nothing is ever
+  written to the real data. Save a scenario to reopen it later.
+- **Alerts and severance reserve**: the Dashboard warns about a vacation deadline coming up (risk of
+  double pay), a bill running above its recent average, and negative cash ahead. A `turnover_pct`
+  field (0% by default) turns on a monthly severance provision, so a real termination never comes
+  as a cash surprise — it only affects the accrual profit, never cash.
+- **Export for the accountant**: download the payroll, the income statement, paid bills or the
+  ledger entries as a CSV, formatted for Brazilian Excel (`;` separator, `,` decimal, UTF-8 BOM).
+- **Bank reconciliation**: import a bank statement (OFX file) in the "Conciliação bancária" tab.
+  Each transaction is matched to an open bill or tuition charge by amount and date (within 3 days);
+  confirming a match pays it for real (never automatic). A transaction with no match is posted as a
+  manual entry in a category you choose. Re-importing the same file never duplicates a transaction.
 
 ## Assumptions (check these with the accountant)
 

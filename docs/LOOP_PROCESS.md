@@ -87,6 +87,12 @@ Where scope gets cut, ACs become testable and decisions get resolved, before wri
 - [ ] Every testable AC has at least one test naming it (`AC4: rejects a negative amount`)
 - [ ] Negative paths: invalid input, a nonexistent id, repetition/idempotency, boundary values
       (cents, year rollover, a 28-day month)
+- [ ] Run the **entire** `npm test` and `npm run test:api` suites, not just the new files — a
+      loop can accidentally break an unrelated test (Loop 4 found a Loop 1 test with a hard-coded
+      date that failed the next day, unrelated to Loop 4's own code)
+- [ ] For an endpoint whose exact bytes matter (a BOM, an encoding, binary output), read the raw
+      bytes (`arrayBuffer()`), not `.text()` — `.text()` silently strips a leading UTF-8 BOM per spec
+      (Loop 9)
 - [ ] Full suites green; **record the counts** in the spec
 - [ ] No test deleted or weakened just to make it pass
 
@@ -136,5 +142,7 @@ Design notes · Configuration · Tasks · Follow-up record (7 phases) · Verific
 
 | Date | Change |
 |---|---|
+| 2026-09-23 | TEST gains "read raw bytes for byte-exact endpoints" (Loop 9: `.text()` strips a BOM before the test can see it, which isn't a real bug) |
+| 2026-09-23 | TEST gains "run the entire suite, not just the new files" (Loop 4: a Loop 1 test with a hard-coded date broke on its own, a day after it was written) |
 | 2026-09-21 | VERIFY gains "list everything listening on the network" (Loop 0: Mongo was open to the network and only the full sweep caught it) |
 | 2026-09-21 | Adapted Kivoni's Loop Engineering v2 for this project: Node/Mongo commands, the exposure gate, the pure-functions-first rule, and checking the numbers by hand |

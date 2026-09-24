@@ -1,8 +1,7 @@
 # Roadmap
 
 Every loop follows the [process](./LOOP_PROCESS.md) and has a spec in [`specs/`](./specs/). Loops 0
-through 3 are **Done**; the rest are in **Draft**: the PLAN exists, and REFINEMENT happens once the
-loop becomes the next one up (so it isn't refined against code that's still going to change).
+through 7, 9 and 10 are **Done**; Loop 8 is not started, blocked on an owner decision (see "Open decisions for the owner" below).
 
 ## Loops
 
@@ -12,13 +11,13 @@ loop becomes the next one up (so it isn't refined against code that's still goin
 | 1 | [Bills to pay](./specs/loop-01-contas-a-pagar.md) | M | 0 | Due date, payment, suppliers, due-bills card | Nibo, Proesc | **Done** |
 | 2 | [Children, classrooms and derived revenue](./specs/loop-02-criancas-e-receita.md) | L | 0 | City-hall revenue coming from enrollment and school days | Sponte, Gennera | **Done** |
 | 3 | [Tuition and delinquency](./specs/loop-03-mensalidades-inadimplencia.md) | M | 2 | Tuition, payment, lateness brackets, debtors | Sponte, Gennera | **Done** |
-| 4 | [Chart of accounts, cost centers and income statement](./specs/loop-04-dre-centros-de-custo.md) | M | 1 | Income statement per school and consolidated, budgeted vs. actual | Nibo, Sponte | Draft |
-| 5 | [Metrics and comparison](./specs/loop-05-indicadores.md) | S | 2, 3, 4 | Cost per child, break-even point, Novo Mundo vs. CIC | Gennera | Draft |
-| 6 | [Scenarios](./specs/loop-06-cenarios.md) | M | 0 | "What if the city hall is late?", losing children, a raise | ours (see BENCHMARK §priority 4) | Draft |
-| 7 | [Alerts and severance reserve](./specs/loop-07-alertas-e-reserva.md) | M | 1, 3 | Alert center, monthly severance provision | ours | Draft |
+| 4 | [Chart of accounts, cost centers and income statement](./specs/loop-04-dre-centros-de-custo.md) | M | 1 | Income statement per school and consolidated, budgeted vs. actual | Nibo, Sponte | **Done** |
+| 5 | [Metrics and comparison](./specs/loop-05-indicadores.md) | S | 2, 3, 4 | Cost per child, break-even point, Novo Mundo vs. CIC | Gennera | **Done** |
+| 6 | [Scenarios](./specs/loop-06-cenarios.md) | M | 0 | "What if the city hall is late?", hiring/firing, cutting an expense | ours (see BENCHMARK §priority 4) | **Done** |
+| 7 | [Alerts and severance reserve](./specs/loop-07-alertas-e-reserva.md) | M | 1, 3 | Alert center, monthly severance provision | ours | **Done** |
 | 8 | [Users, permissions and audit log](./specs/loop-08-usuarios-permissoes.md) | L | 0 | Login, roles per school, masked sensitive fields, audit log | the market in general | Draft |
-| 9 | [Export for the accountant and attachments](./specs/loop-09-exportacao-e-anexos.md) | M | 1, 4 | XLSX/CSV/PDF, receipt and invoice attachments | Nibo, Unimestre | Draft |
-| 10 | [Bank reconciliation (OFX)](./specs/loop-10-conciliacao-bancaria.md) | M | 1, 3 | Import a statement, suggest and confirm payments | Nibo, Proesc | Draft |
+| 9 | [Export for the accountant and attachments](./specs/loop-09-exportacao-e-anexos.md) | M | 1, 4 | CSV export (payroll, DRE, paid bills, entries) | Nibo, Unimestre | **Done** |
+| 10 | [Bank reconciliation (OFX)](./specs/loop-10-conciliacao-bancaria.md) | M | 1, 3 | Import a statement, suggest and confirm payments | Nibo, Proesc | **Done** |
 
 Sizes: **S** ≈ 1–2 days · **M** ≈ 3–5 days · **L** ≈ 1–2 weeks (one person, with tests and VERIFY).
 
@@ -93,12 +92,30 @@ From Loop 0 (details in its spec):
 | 13 | No history of `child_daily_rate` changes mid-year | If it's ever needed |
 | 14 | No automatic interest/fine on a late tuition charge (use a negative `discount` as a manual surcharge if needed) | Settle the legal rule with the owner before automating it |
 | 15 | Manually creating a tuition charge (outside "generate") doesn't check that the child belongs to the given `school_id` | Harden it if a real case shows up |
+| 16 | Category-to-group map for the income statement is a single global constant, not editable per school | Loop 9 (or sooner if it becomes annoying) |
+| 17 | Income statement is annual only, no 12-column monthly breakdown | Would need `calc.js` to keep a per-month category breakdown; no clear demand yet |
+| 18 | `bills.test.js` AC6 had a date hard-coded to when it was written (`2026-09-22`) and failed the next day | Fixed in Loop 4 by using a relative "yesterday"; a reminder to avoid hard-coded "today" dates in tests going forward |
+| 19 | The top "All schools" filter was silently swapped for the first school on **every** tab except Dashboard — DRE's consolidated view (Loop 4) was never actually reachable by clicking, only by a direct request | Fixed in Loop 5: `dashboard`, `statement` and `metrics` now allow "All" |
+| 20 | Break-even uses the blended (public+private) average revenue and variable cost per child, not the marginal rate of an additional public-funded child | Revisit if the owner wants the marginal-rate version instead |
+| 21 | Scenarios can't simulate a salary raise or a change in enrollment (needs `calc.js` to support a salary/revenue that varies by month) | Later, if there's demand |
+| 22 | Reopening a saved scenario doesn't reload its adjustments into the builder for editing | As preferred |
+| 23 | Overdue bills and high delinquency aren't surfaced as Dashboard *alerts* (they already have their own panels since Loops 1/3) | Only if the owner wants them duplicated into the alert center too |
+| 24 | No XLSX (binary), no severance PDF, no file attachments — CSV export only | A future loop, if the owner needs them; XLSX/PDF need a way to actually verify the output, and attachments need real file upload testing |
+| 25 | OFX parser tested only against a hand-built file (public spec), never a real bank export | Validate against a real statement once one is available (question 5 above) |
+| 26 | The reconciliation tab shows each transaction but not a "does the ledger balance match the app's balance" summary, even though `ledgerBalance`/`ledgerDate` are already parsed and returned by the import endpoint | A future loop, if useful |
+| 27 | Confirming a bank-transaction suggestion always pays with the transaction's own date and amount; changing either requires "lançar manualmente" instead | As preferred |
 
 ## Changelog
 
 | Date | Change |
 |---|---|
 | 2026-09-21 | **Loop 0 Done**: real Mongo verified, 5 API tests, input validation, server and Mongo restricted to 127.0.0.1, backup/restore. Added AC10 (Mongo exposed to the network, found during VERIFY) |
+| 2026-09-23 | **Loop 9 Done**: CSV export (payroll, DRE, paid bills, entries) for the accountant, Brazilian-Excel formatted (`;`, `,` decimal, BOM). XLSX, the severance PDF and file attachments cut from scope — see the spec's Result |
+| 2026-09-23 | **Loop 10 Done**: OFX statement import, fingerprint-based dedup, automatic bill/tuition suggestion (±3 days, exact amount, debit-only-matches-bill / credit-only-matches-tuition), human-confirmed payment reusing `payBill`/`payTuition`, manual entry for unmatched transactions, "Conciliação bancária" tab. No new dependency. Open item: no real bank OFX file was available to test against — see carry-over #25 |
+| 2026-09-23 | **Loop 7 Done**: alert center (vacation deadline, a bill above its average, negative cash coming up) on the Dashboard; monthly severance reserve (`turnover_pct`, 0% by default, never touches cash) |
+| 2026-09-23 | **Loop 6 Done**: scenario simulator (delay the city-hall transfer, hire, fire with a real severance cost, cut an expense category) compared against the base, without touching any real data; save/reopen/delete scenarios |
+| 2026-09-23 | **Loop 5 Done**: cost/revenue per child, payroll over revenue, break-even point, Novo Mundo vs. CIC comparison with a per-row winner, monthly margin; fixed a navigation bug that blocked the "All schools" view outside the Dashboard (also affected Loop 4's DRE) |
+| 2026-09-23 | **Loop 4 Done**: income statement (DRE) with a fixed category→group map, matching the Dashboard's profit to the cent for a school and consolidated; fixed a date-hard-coded flaky test from Loop 1 |
 | 2026-09-22 | **Loop 3 Done**: tuition per privately-funded child, payment with a payment method, lateness brackets, delinquency and a copyable billing message (no CPF) on the Dashboard |
 | 2026-09-22 | **Loop 2 Done**: revenue derived from enrollment (children × school days × rate per child-day), with the manual revenue "superseded" and a documented scope cut (no dated Contract record); Children tab, occupancy on the Dashboard; fixed a database-name collision in the API tests |
 | 2026-09-22 | **Loop 1 Done**: bills to pay (due date, payment, suppliers, splitting), due-bills card on the Dashboard; fixed a Loop 0 carry-over (nonexistent id → 404 on every resource) |

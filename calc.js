@@ -14,8 +14,9 @@
 //  - Closed month: cash flow uses only the actual entries (every entry that month).
 
 import { publicRevenueForMonth } from './children.js';
+import { calculateSeverance } from './severance.js';
 
-const SUMMABLE = ['revenue', 'derivedRevenue', 'salaries', 'benefits', 'charges', 'thirteenthProvision', 'vacationProvision', 'expenses', 'taxes', 'accrualCost', 'result', 'cashIn', 'cashOut'];
+const SUMMABLE = ['revenue', 'derivedRevenue', 'salaries', 'benefits', 'charges', 'thirteenthProvision', 'vacationProvision', 'severanceProvision', 'expenses', 'taxes', 'accrualCost', 'result', 'cashIn', 'cashOut'];
 
 // Does the employee count on the month's payroll? Without dates, `active` holds for the whole year.
 export function activeInMonth(employee, year, month) {
@@ -28,9 +29,27 @@ export function activeInMonth(employee, year, month) {
   return true;
 }
 
-export function calculateSchool({ school, employees, revenues, expenses, factors, closedMonths = [], entries, year, children = [], schoolDays = [] }) {
+export function calculateSchool({ school, employees, revenues, expenses, factors, closedMonths = [], entries, year, children = [], schoolDays = [], revenueDelayMonths = 0, severanceReserve = null }) {
   const chargesPct = (school.payroll_tax_pct || 0) / 100;
   const taxPct = (school.tax_pct || 0) / 100;
+  // Severance reserve (Loop 7): a monthly provision so a real severance never comes as a cash
+  // surprise. It's the cost of firing (without cause) every currently active employee, hypothetically
+  // on Dec 31st, times the yearly turnover rate, spread over the 12 months. It only ever touches
+  // accrualCost/result, exactly like the 13th-salary and vacation provisions — never cashOut, since
+  // no cash actually leaves until someone really goes.
+  let severanceProvisionMonthly = 0;
+  if (severanceReserve?.turnoverPct > 0) {
+    const hypotheticalDate = `${year}-12-31`;
+    const totalCost = employees.filter((e) => e.active && e.hire_date).reduce((s, e) => {
+      try {
+        return s + calculateSeverance({
+          salary: e.salary, hire_date: e.hire_date, termination_date: hypotheticalDate, type: 'without_cause',
+          vacation_periods_taken: e.vacation_periods_taken || 0, fgts_balance: e.fgts_balance ?? null,
+        }).schoolCost;
+      } catch { return s; } // a bad hire_date (e.g. after year-end) just skips that employee's reserve
+    }, 0);
+    severanceProvisionMonthly = totalCost * (severanceReserve.turnoverPct / 100) / 12;
+  }
   // Once the school has public-slot children on file, revenue becomes derived (children × school
   // days): the manual "follows calendar" revenues are superseded, so the city hall payment is never
   // counted twice. With no children on file, nothing changes (AC4).
@@ -67,13 +86,14 @@ export function calculateSchool({ school, employees, revenues, expenses, factors
     const oneOffRevenue = sumBy(oneOffs, 'revenue');
     const oneOffExpense = sumBy(oneOffs, 'expense');
 
-    const accrualCost = salaries + benefits + charges + thirteenthProvision + vacationProvision + monthExpenses + taxes + oneOffExpense;
+    const accrualCost = salaries + benefits + charges + thirteenthProvision + vacationProvision + severanceProvisionMonthly + monthExpenses + taxes + oneOffExpense;
     const plannedCashOut = salaries + benefits + charges + monthExpenses + taxes + thirteenthPayout + vacationPayout + oneOffExpense;
     const closed = !!closedMonths[i];
     const actual = { n: monthEntries.length, revenue: sumBy(monthEntries, 'revenue'), expense: sumBy(monthEntries, 'expense') };
 
     return {
       month, factor, revenue: revenue + oneOffRevenue, derivedRevenue, salaries, benefits, charges, thirteenthProvision, vacationProvision,
+      severanceProvision: severanceProvisionMonthly,
       expenses: monthExpenses + oneOffExpense, taxes, accrualCost, result: revenue + oneOffRevenue - accrualCost,
       thirteenthPayout, vacationPayout, oneOffExpense, oneOffRevenue, actual, closed,
       cashIn: closed ? actual.revenue : revenue + oneOffRevenue,
@@ -83,11 +103,25 @@ export function calculateSchool({ school, employees, revenues, expenses, factors
 
   // Budgeted vs. actual per expense category (whole year).
   const cats = new Map();
-  const category = (name) => cats.get(name) ?? cats.set(name, { category: name, budgeted: 0, actual: 0 }).get(name);
+  const category = (name) => cats.get(name) ?? cats.set(name, { category: name, budgeted: 0, actual: 0, oneOff: 0 }).get(name);
   for (const e of expenses) {
     category(e.category || 'Outros').budgeted += factors.reduce((s, f) => s + e.monthly_amount * (e.follows_calendar ? f : 1), 0);
   }
-  for (const l of entries.filter((x) => x.type === 'expense')) category(l.category || 'Outros').actual += l.amount;
+  for (const l of entries.filter((x) => x.type === 'expense')) {
+    const c = category(l.category || 'Outros');
+    c.actual += l.amount;
+    if (l.one_off) c.oneOff += l.amount; // same amount that feeds accrualCost above (via oneOffExpense)
+  }
+
+  // Scenario support (Loop 6): pushes cash in later without touching accrual revenue/result. Cash
+  // that would have arrived before month 1 (from a negative source index) is simply lost from this
+  // year's view — a documented approximation, since the app only models one year at a time.
+  if (revenueDelayMonths > 0) {
+    for (let i = 11; i >= 0; i--) {
+      const source = i - revenueDelayMonths;
+      months[i].cashIn = source >= 0 ? months[source].cashIn : 0;
+    }
+  }
 
   return { ...closeCashFlow(months, school.initial_balance || 0), categories: [...cats.values()] };
 }
@@ -129,8 +163,8 @@ export function consolidate(results, totalInitialBalance) {
   });
   const cats = new Map();
   for (const r of results) for (const c of r.categories) {
-    const x = cats.get(c.category) ?? cats.set(c.category, { category: c.category, budgeted: 0, actual: 0 }).get(c.category);
-    x.budgeted += c.budgeted; x.actual += c.actual;
+    const x = cats.get(c.category) ?? cats.set(c.category, { category: c.category, budgeted: 0, actual: 0, oneOff: 0 }).get(c.category);
+    x.budgeted += c.budgeted; x.actual += c.actual; x.oneOff += c.oneOff;
   }
   return { ...closeCashFlow(months, totalInitialBalance), categories: [...cats.values()] };
 }

@@ -96,10 +96,10 @@ test('AC5: a bill split between the schools creates two linked bills; paying one
 });
 
 test('AC6: the due-bills panel separates overdue from upcoming, with the school name', async () => {
-  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
   const in3days = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
   const in30days = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
-  await api.req('POST', '/api/bills', { school_id: novoMundo.id, description: 'Vencida agora', category: 'Outros', period: '2026-09', due_date: today === '2026-09-22' ? '2026-09-15' : today, amount: 50 });
+  await api.req('POST', '/api/bills', { school_id: novoMundo.id, description: 'Vencida agora', category: 'Outros', period: '2026-09', due_date: yesterday, amount: 50 });
   await api.req('POST', '/api/bills', { school_id: novoMundo.id, description: 'Perto de vencer', category: 'Outros', period: '2026-09', due_date: in3days, amount: 60 });
   await api.req('POST', '/api/bills', { school_id: novoMundo.id, description: 'Longe', category: 'Outros', period: '2026-10', due_date: in30days, amount: 9999 });
 

@@ -25,7 +25,7 @@ export async function start() {
     });
     const text = await r.text();
     let parsed; try { parsed = JSON.parse(text); } catch { parsed = text; }
-    return { status: r.status, body: parsed };
+    return { status: r.status, body: parsed, headers: r.headers };
   };
 
   return {

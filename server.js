@@ -1,13 +1,20 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
-import { connect, ensureCalendar, Calendar, School, Employee, Revenue, Expense, Entry, Supplier, Bill, Child, Tuition } from './db.js';
+import { connect, ensureCalendar, Calendar, School, Employee, Revenue, Expense, Entry, Supplier, Bill, Child, Tuition, Scenario, BankTransaction } from './db.js';
 import { calculateSchool, consolidate } from './calc.js';
 import { calculateSeverance, SEVERANCE_TYPES } from './severance.js';
+import { applyAdjustments } from './scenarios.js';
+import { generateAlerts } from './alerts.js';
+import { toCsv, payrollRows, PAYROLL_COLUMNS, statementRows, STATEMENT_COLUMNS, paidBillsRows, BILLS_COLUMNS, entriesRows, ENTRIES_COLUMNS } from './export.js';
+import { parseOfx } from './ofx.js';
+import { fingerprint, suggest } from './reconciliation.js';
 import { prorate } from './proration.js';
 import { billStatus, generateMonthBills, dueSummary } from './bills.js';
-import { validateChild, occupancy } from './children.js';
+import { validateChild, occupancy, isActiveOn } from './children.js';
 import { calculateCharge, generateMonthTuition, overdueBracket, delinquency, chargeMessage } from './tuition.js';
+import { buildStatement } from './statement.js';
+import { buildMetrics, betterSchool } from './metrics.js';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import mongoose from 'mongoose';
@@ -24,7 +31,7 @@ const RESOURCES = {
   revenues: { model: Revenue, cols: ['school_id', 'description', 'monthly_amount', 'follows_calendar'] },
   expenses: { model: Expense, cols: ['school_id', 'description', 'category', 'monthly_amount', 'follows_calendar', 'due_day'] },
   entries: { model: Entry, cols: ['school_id', 'date', 'type', 'category', 'description', 'amount', 'one_off'] },
-  schools: { model: School, cols: ['name', 'payroll_tax_pct', 'tax_pct', 'initial_balance', 'vacation_month', 'children_count', 'capacity', 'child_daily_rate', 'tuition_due_day'] },
+  schools: { model: School, cols: ['name', 'payroll_tax_pct', 'tax_pct', 'initial_balance', 'vacation_month', 'children_count', 'capacity', 'child_daily_rate', 'tuition_due_day', 'turnover_pct'] },
   children: {
     model: Child,
     cols: ['school_id', 'name', 'birth_date', 'classroom', 'guardian_name', 'guardian_phone', 'enrollment_type', 'tuition_amount', 'enrollment_date', 'exit_date'],
@@ -44,6 +51,7 @@ const RESOURCES = {
     },
   },
   suppliers: { model: Supplier, cols: ['name', 'tax_id', 'contact'] },
+  scenarios: { model: Scenario, cols: ['school_id', 'name', 'adjustments'] },
   bills: {
     model: Bill, cols: ['school_id', 'supplier_id', 'description', 'category', 'period', 'due_date', 'amount'],
     validate: async (data) => {
@@ -58,6 +66,11 @@ const RESOURCES = {
 const json = (res, status, body) => {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(body));
+};
+
+const sendCsv = (res, filename, content) => {
+  res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${filename}"` });
+  res.end(content);
 };
 
 const readBody = (req) => new Promise((resolve, reject) => {
@@ -96,26 +109,50 @@ function pickFields(cols, body) {
   return out;
 }
 
+// Loads the exact plain-object inputs `calculateSchool` expects, for one school. Shared by
+// `buildReport` and the scenario simulator, so both always compute from the same real data.
+async function loadSchoolInputs(school, year) {
+  await ensureCalendar(school._id, year);
+  const [employees, revenues, expenses, cal, entries, children] = await Promise.all([
+    Employee.find({ school_id: school._id }).lean(),
+    Revenue.find({ school_id: school._id }).lean(),
+    Expense.find({ school_id: school._id }).lean(),
+    Calendar.find({ school_id: school._id, year }).sort('month').lean(),
+    Entry.find({ school_id: school._id, date: { $regex: `^${year}-` } }).lean(),
+    Child.find({ school_id: school._id }).lean(),
+  ]);
+  return {
+    school, employees, revenues, expenses, factors: cal.map((c) => c.factor), closedMonths: cal.map((c) => c.closed),
+    entries, year, children, schoolDays: cal.map((c) => c.school_days),
+    severanceReserve: school.turnover_pct > 0 ? { turnoverPct: school.turnover_pct } : null,
+  };
+}
+
 async function buildReport(year, schoolParam) {
   if (schoolParam !== 'all') requireId(schoolParam, 'school');
   const schools = await (schoolParam === 'all' ? School.find().sort('_id') : School.find({ _id: schoolParam })).lean();
-  const results = await Promise.all(schools.map(async (school) => {
-    await ensureCalendar(school._id, year);
-    const [employees, revenues, expenses, cal, entries, children] = await Promise.all([
-      Employee.find({ school_id: school._id }).lean(),
-      Revenue.find({ school_id: school._id }).lean(),
-      Expense.find({ school_id: school._id }).lean(),
-      Calendar.find({ school_id: school._id, year }).sort('month').lean(),
-      Entry.find({ school_id: school._id, date: { $regex: `^${year}-` } }).lean(),
-      Child.find({ school_id: school._id }).lean(),
-    ]);
-    return calculateSchool({
-      school, employees, revenues, expenses, factors: cal.map((c) => c.factor), closedMonths: cal.map((c) => c.closed),
-      entries, year, children, schoolDays: cal.map((c) => c.school_days),
-    });
-  }));
+  const results = await Promise.all(schools.map(async (school) => calculateSchool(await loadSchoolInputs(school, year))));
   if (schoolParam !== 'all') return results[0];
   return { ...consolidate(results, schools.reduce((s, e) => s + e.initial_balance, 0)), bySchool: schools.map((e, i) => ({ id: String(e._id), name: e.name, ...results[i].totals })) };
+}
+
+const summarize = (report) => ({
+  result: report.totals.result, revenue: report.totals.revenue,
+  minBalance: report.minBalance, minBalanceMonth: report.minBalanceMonth,
+  finalBalance: report.finalBalance, reserveNeeded: report.reserveNeeded,
+});
+
+async function simulateScenario({ school_id, year, adjustments }) {
+  requireId(school_id, 'school_id');
+  const y = requireYear(year ?? new Date().getFullYear());
+  if (adjustments !== undefined && !Array.isArray(adjustments)) throw new InputError('adjustments deve ser uma lista');
+  const school = await School.findById(school_id).lean();
+  if (!school) throw new InputError('escola não encontrada', 404);
+  const inputs = await loadSchoolInputs(school, y);
+  const base = calculateSchool(inputs);
+  const applied = applyAdjustments(inputs, adjustments || []);
+  const scenario = calculateSchool({ ...inputs, ...applied });
+  return { base: summarize(base), scenario: summarize(scenario), warnings: applied.warnings };
 }
 
 // Creates one expense/entry per school, with the amount split, linked by `group_id`.
@@ -284,11 +321,151 @@ async function applySeverance(body) {
   return { ok: true, schoolCost: result.schoolCost };
 }
 
+// Imports an OFX statement: parses it, drops transactions already imported (by fingerprint), and
+// suggests a match (open bill or open tuition charge) for every new one. Nothing is paid yet —
+// suggestions are only confirmed by a human via `confirmBankTransaction`.
+async function importBankStatement({ school_id, ofx }) {
+  requireId(school_id, 'school_id');
+  if (typeof ofx !== 'string' || !ofx) throw new InputError('ofx (texto do arquivo) é obrigatório');
+  if (!(await School.exists({ _id: school_id }))) throw new InputError('escola não encontrada', 404);
+  const parsed = parseOfx(ofx);
+  const withFingerprint = parsed.transactions.map((t) => ({ ...t, fingerprint: fingerprint({ schoolId: school_id, date: t.date, amount: t.amount, fitid: t.fitid }) }));
+  const existing = new Set((await BankTransaction.find({ school_id, fingerprint: { $in: withFingerprint.map((t) => t.fingerprint) } }).select('fingerprint').lean()).map((t) => t.fingerprint));
+  const fresh = withFingerprint.filter((t) => !existing.has(t.fingerprint));
+  if (!fresh.length) return { imported: 0, duplicates: withFingerprint.length, ledgerBalance: parsed.ledgerBalance, ledgerDate: parsed.ledgerDate };
+  const [bills, tuitions] = await Promise.all([
+    Bill.find({ school_id, paid_at: null }).select('amount due_date').lean(),
+    Tuition.find({ school_id, paid_at: null }).select('base_amount discount due_date').lean(),
+  ]);
+  const billPool = bills.map((b) => ({ id: String(b._id), amount: b.amount, due_date: b.due_date }));
+  const tuitionPool = tuitions.map((t) => ({ id: String(t._id), amount: calculateCharge(t.base_amount, t.discount), due_date: t.due_date }));
+  await BankTransaction.insertMany(fresh.map((t) => {
+    const match = suggest(t, { bills: billPool, tuitions: tuitionPool });
+    return {
+      school_id, fitid: t.fitid, date: t.date, amount: t.amount, name: t.name, fingerprint: t.fingerprint,
+      suggested_kind: match?.kind ?? null, suggested_id: match?.id ?? null,
+    };
+  }), { ordered: false });
+  return { imported: fresh.length, duplicates: withFingerprint.length - fresh.length, ledgerBalance: parsed.ledgerBalance, ledgerDate: parsed.ledgerDate };
+}
+
+async function listBankTransactions(schoolParam) {
+  const filter = schoolParam === 'all' ? {} : { school_id: requireId(schoolParam, 'school') };
+  const docs = await BankTransaction.find(filter).sort({ date: -1, _id: -1 }).lean();
+  return docs.map(({ _id, ...t }) => ({ ...t, id: String(_id) }));
+}
+
+// Confirms a transaction against a bill or tuition charge (its suggestion, or a different one the
+// human picked), paying it for real, or clears the suggestion so it's treated as unmatched.
+async function confirmBankTransaction(id, { kind, target_id }) {
+  const tx = await BankTransaction.findById(id);
+  if (!tx) throw new InputError('transação não encontrada', 404);
+  if (tx.reconciled) throw new InputError('esta transação já foi conciliada');
+  const useKind = kind ?? tx.suggested_kind;
+  const useId = target_id ?? tx.suggested_id;
+  if (!useKind || !useId) throw new InputError('informe kind e target_id (ou use uma transação com sugestão)');
+  if (!['bill', 'tuition'].includes(useKind)) throw new InputError('kind deve ser bill ou tuition');
+  requireId(useId, 'target_id');
+  const paid_at = tx.date;
+  const amount_paid = Math.abs(tx.amount);
+  const { entry_id } = useKind === 'bill' ? await payBill(useId, { amount_paid, paid_at }) : await payTuition(useId, { amount_paid, paid_at });
+  tx.reconciled = true; tx.entry_id = entry_id; tx.suggested_kind = useKind; tx.suggested_id = useId;
+  await tx.save();
+  return { ok: true, entry_id: String(entry_id) };
+}
+
+// Posts a plain entry for a transaction that doesn't match any open bill/tuition charge.
+async function manualBankEntry(id, { category, description }) {
+  const tx = await BankTransaction.findById(id);
+  if (!tx) throw new InputError('transação não encontrada', 404);
+  if (tx.reconciled) throw new InputError('esta transação já foi conciliada');
+  const entry = await Entry.create({
+    school_id: tx.school_id, date: tx.date, type: tx.amount < 0 ? 'expense' : 'revenue',
+    category: category || 'Outros', description: description || tx.name, amount: Math.abs(tx.amount), one_off: 0,
+  });
+  tx.reconciled = true; tx.entry_id = entry._id;
+  await tx.save();
+  return { ok: true, entry_id: String(entry._id) };
+}
+
 async function api(req, res, url) {
   const [resource, seg2, seg3] = url.pathname.split('/').filter(Boolean).slice(1);
   const q = url.searchParams;
 
   if (resource === 'report') return json(res, 200, await buildReport(requireYear(q.get('year') ?? new Date().getFullYear()), q.get('school') || 'all'));
+
+  if (resource === 'statement' && req.method === 'GET') {
+    const report = await buildReport(requireYear(q.get('year') ?? new Date().getFullYear()), q.get('school') || 'all');
+    return json(res, 200, buildStatement(report));
+  }
+
+  if (resource === 'metrics' && req.method === 'GET') {
+    const year = requireYear(q.get('year') ?? new Date().getFullYear());
+    const schoolParam = q.get('school') || 'all';
+    const today = new Date().toISOString().slice(0, 10);
+    const activeCount = async (schoolId) => (await Child.find({ school_id: schoolId }).select('enrollment_date exit_date').lean()).filter((c) => isActiveOn(c, today)).length;
+
+    if (schoolParam !== 'all') {
+      requireId(schoolParam, 'school');
+      const [report, activeChildren] = await Promise.all([buildReport(year, schoolParam), activeCount(schoolParam)]);
+      return json(res, 200, buildMetrics({ report, activeChildren }));
+    }
+
+    const schools = await School.find().sort('_id').lean();
+    const perSchool = await Promise.all(schools.map(async (s) => {
+      const [report, activeChildren] = await Promise.all([buildReport(year, String(s._id)), activeCount(s._id)]);
+      return { id: String(s._id), name: s.name, ...buildMetrics({ report, activeChildren }) };
+    }));
+    const consolidatedReport = await buildReport(year, 'all');
+    const totalActiveChildren = perSchool.reduce((s, x) => s + x.activeChildren, 0);
+    const consolidated = buildMetrics({ report: consolidatedReport, activeChildren: totalActiveChildren });
+    const rows = { costPerChild: 'lower', revenuePerChild: 'higher', payrollOverRevenue: 'lower', breakEven: 'lower', margin: 'higher' };
+    const winners = {};
+    for (const key of Object.keys(rows)) winners[key] = betterSchool(perSchool.map((s) => ({ id: s.id, value: s[key] })), rows[key]);
+    return json(res, 200, { schools: perSchool, consolidated, winners });
+  }
+
+  if (resource === 'alerts' && req.method === 'GET') {
+    const year = requireYear(q.get('year') ?? new Date().getFullYear());
+    const schoolId = requireId(q.get('school_id'), 'school_id');
+    const today = new Date().toISOString().slice(0, 10);
+    const [report, employees, bills] = await Promise.all([
+      buildReport(year, schoolId),
+      Employee.find({ school_id: schoolId }).lean(),
+      Bill.find({ school_id: schoolId }).lean(),
+    ]);
+    const currentMonth = Number(today.slice(0, 4)) === year ? Number(today.slice(5, 7)) : 0;
+    return json(res, 200, generateAlerts({ employees, bills, months: report.months, today, currentMonth }));
+  }
+
+  if (resource === 'export') {
+    if (req.method !== 'GET') return json(res, 405, { error: 'método não suportado' });
+    const schoolId = requireId(q.get('school_id'), 'school_id');
+
+    if (seg2 === 'payroll') {
+      const period = q.get('period');
+      if (!/^\d{4}-\d{2}$/.test(period || '')) throw new InputError('period inválido (use AAAA-MM)');
+      const employees = await Employee.find({ school_id: schoolId }).lean();
+      return sendCsv(res, `folha-${period}.csv`, toCsv(payrollRows(employees, period), PAYROLL_COLUMNS));
+    }
+    if (seg2 === 'statement') {
+      const year = requireYear(q.get('year') ?? new Date().getFullYear());
+      const report = await buildReport(year, schoolId);
+      return sendCsv(res, `dre-${year}.csv`, toCsv(statementRows(buildStatement(report)), STATEMENT_COLUMNS));
+    }
+    if (seg2 === 'bills') {
+      const period = q.get('period') || null;
+      if (period && !/^\d{4}-\d{2}$/.test(period)) throw new InputError('period inválido (use AAAA-MM)');
+      const bills = await Bill.find({ school_id: schoolId }).lean();
+      return sendCsv(res, `contas-pagas${period ? `-${period}` : ''}.csv`, toCsv(paidBillsRows(bills, period), BILLS_COLUMNS));
+    }
+    if (seg2 === 'entries') {
+      const year = requireYear(q.get('year') ?? new Date().getFullYear());
+      const entries = await Entry.find({ school_id: schoolId, date: { $regex: `^${year}-` } }).sort({ date: -1, _id: -1 }).lean();
+      return sendCsv(res, `lancamentos-${year}.csv`, toCsv(entriesRows(entries), ENTRIES_COLUMNS));
+    }
+    return json(res, 404, { error: 'exportação não encontrada' });
+  }
 
   if (resource === 'bills' && (seg2 === 'generate' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
     if (seg2 === 'generate' && req.method === 'POST') return json(res, 201, await generateBills(await readBody(req)));
@@ -313,6 +490,19 @@ async function api(req, res, url) {
     if (!school) return json(res, 404, { error: 'escola não encontrada' });
     const children = await Child.find({ school_id: schoolId }).select('enrollment_date exit_date').lean();
     return json(res, 200, occupancy(children, school.capacity, new Date().toISOString().slice(0, 10)));
+  }
+
+  if (resource === 'scenarios' && seg2 === 'simulate') {
+    if (req.method !== 'POST') return json(res, 405, { error: 'método não suportado' });
+    return json(res, 200, await simulateScenario(await readBody(req)));
+  }
+
+  if (resource === 'bank') {
+    if (seg2 === 'import' && req.method === 'POST') return json(res, 201, await importBankStatement(await readBody(req)));
+    if (seg2 === 'list' && req.method === 'GET') return json(res, 200, await listBankTransactions(q.get('school') || 'all'));
+    if (seg3 === 'confirm' && req.method === 'POST') return json(res, 200, await confirmBankTransaction(requireId(seg2), await readBody(req)));
+    if (seg3 === 'manual' && req.method === 'POST') return json(res, 200, await manualBankEntry(requireId(seg2), await readBody(req)));
+    return json(res, 405, { error: 'método não suportado' });
   }
 
   const id = seg2 && seg3 === undefined ? requireId(seg2) : undefined;

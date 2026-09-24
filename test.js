@@ -40,7 +40,15 @@ let r2 = calculateSchool({ ...base, entries: [
   { date: '2026-03-12', type: 'expense', category: 'Material de limpeza', amount: 50, one_off: 1 },
 ] });
 assert.equal(r2.months[2].cashOut, 10 + 0 + 50 + 0.06 * 100);   // planned 10 + one-off 50 + tax 6
-assert.deepEqual(r2.categories.find((c) => c.category === 'Luz'), { category: 'Luz', budgeted: 120, actual: 12 });
+assert.deepEqual(r2.categories.find((c) => c.category === 'Luz'), { category: 'Luz', budgeted: 120, actual: 12, oneOff: 0 });
+
+// AC6 (Loop 4): a one-off entry's amount is tracked separately from other actual entries, so the
+// income statement can use budgeted+oneOff (what feeds the profit) instead of the full actual.
+const r2b = calculateSchool({ ...base, entries: [
+  { date: '2026-03-10', type: 'expense', category: 'Luz', amount: 12, one_off: 0 },
+  { date: '2026-03-12', type: 'expense', category: 'Luz', amount: 999, one_off: 1 },
+] });
+assert.deepEqual(r2b.categories.find((c) => c.category === 'Luz'), { category: 'Luz', budgeted: 120, actual: 1011, oneOff: 999 });
 
 // Closed month: cash flow uses only the actual entries
 r2 = calculateSchool({ ...base, closedMonths: [false, false, true], entries: [{ date: '2026-03-10', type: 'revenue', amount: 777 }] });
@@ -78,5 +86,31 @@ const variedSchoolDays = Array(12).fill(20); variedSchoolDays[1] = 10; // Februa
 const r5 = calculateSchool({ ...schoolWithChildren, schoolDays: variedSchoolDays });
 assert.equal(r5.months[1].derivedRevenue, 150);
 assert.equal(r5.months[1].factor, factors[1]); // the transfer factor (for expenses) doesn't change
+
+// Loop 6 (scenarios): revenueDelayMonths shifts cashIn without touching accrual revenue/result.
+const noDelay = calculateSchool({ ...baseWithEntries });
+const delayZero = calculateSchool({ ...baseWithEntries, revenueDelayMonths: 0 });
+assert.deepEqual(delayZero, noDelay); // omitting it or passing 0 must be byte-identical
+const delayed = calculateSchool({ ...baseWithEntries, revenueDelayMonths: 2 });
+assert.equal(delayed.totals.result, noDelay.totals.result); // accrual profit never moves
+assert.equal(delayed.months[0].cashIn, 0); // nothing to shift in from "month -2"
+assert.equal(delayed.months[1].cashIn, 0); // "month -1"
+assert.equal(delayed.months[2].cashIn, noDelay.months[0].cashIn); // January's cash now lands in March
+assert.equal(delayed.months[11].cashIn, noDelay.months[9].cashIn);
+assert.equal(delayed.months[0].revenue, noDelay.months[0].revenue); // accrual revenue stays put
+
+// Loop 7 (severance reserve): off by default (turnoverPct 0 or severanceReserve omitted) is byte-identical.
+const employeeWithHire = { salary: 3000, benefits: 500, active: 1, hire_date: '2023-03-10', vacation_periods_taken: 3 };
+const reserveInputs = { ...baseWithEntries, employees: [employeeWithHire] };
+const noReserve = calculateSchool(reserveInputs);
+assert.deepEqual(calculateSchool({ ...reserveInputs, severanceReserve: { turnoverPct: 0 } }), noReserve);
+assert.deepEqual(calculateSchool({ ...reserveInputs, severanceReserve: null }), noReserve);
+
+// With turnoverPct on, the annual result drops by exactly totalSeveranceCost × turnoverPct, and cash is untouched.
+const withReserve = calculateSchool({ ...reserveInputs, severanceReserve: { turnoverPct: 20 } });
+assert.equal(withReserve.totals.cashOut, noReserve.totals.cashOut); // never a cash effect
+// totals.severanceProvision is 12x the monthly provision, i.e. exactly totalCost x turnoverPct already.
+assert.ok(Math.abs(withReserve.totals.result - (noReserve.totals.result - withReserve.totals.severanceProvision)) < 0.005);
+assert.ok(withReserve.totals.severanceProvision > 0);
 
 console.log('ok');

@@ -17,7 +17,8 @@ const state = { schools: [], school: 'all', year: new Date().getFullYear(), tab:
 const TABS = [
   ['dashboard', 'Painel'], ['revenues', 'Receitas'], ['children', 'Crianças'], ['tuition', 'Mensalidades'],
   ['employees', 'Equipe'], ['expenses', 'Despesas'], ['bills', 'Contas a pagar'], ['suppliers', 'Fornecedores'],
-  ['calendar', 'Calendário de repasse'], ['entries', 'Lançamentos reais'], ['settings', 'Parâmetros'],
+  ['calendar', 'Calendário de repasse'], ['entries', 'Lançamentos reais'], ['statement', 'DRE'], ['metrics', 'Indicadores'],
+  ['scenarios', 'Cenários'], ['bank', 'Conciliação bancária'], ['settings', 'Parâmetros'],
 ];
 const BILL_STATUS = { pending: ['Pendente', ''], overdue: ['Vencida', 'neg'], paid: ['Paga', 'pos'] };
 const TUITION_STATUS = { current: ['Em dia', ''], '1-30': ['Atraso 1–30 dias', 'neg'], '31-60': ['Atraso 31–60 dias', 'neg'], '60+': ['Atraso 60+ dias', 'neg'], paid: ['Paga', 'pos'] };
@@ -127,6 +128,14 @@ function renderSplitForm(root, resource, { defaults = {}, fields }) {
 
 const MONTH_OPTIONS = [['', 'padrão da escola'], ...MONTHS.map((m, i) => [i + 1, m])];
 
+// Downloads a CSV export. The server sets Content-Disposition: attachment, so this never navigates
+// the SPA away — the browser just saves the file.
+function exportButton(label, path) {
+  const b = document.createElement('button'); b.className = 'sec'; b.textContent = label;
+  b.onclick = () => { window.location.href = '/api/' + path; };
+  return b;
+}
+
 // ---------- Tabs ----------
 const views = {
   async dashboard(root) {
@@ -135,7 +144,13 @@ const views = {
     const kpi = (t, v, sub, c = '') => `<div class="card kpi"><div class="t">${t}</div><div class="v ${c}">${v}</div><div class="s">${sub}</div></div>`;
     const negative = r.reserveNeeded > 0;
     const reduced = r.months.filter((m) => m.factor < 1).map((m) => MONTHS[m.month - 1]);
+    const targetSchools = state.school === 'all' ? state.schools : [state.schools.find((e) => e.id === state.school)];
+    const alertsBySchool = await Promise.all(targetSchools.map((s) => api('GET', `alerts?year=${state.year}&school_id=${s.id}`).then((list) => list.map((a) => ({ ...a, school: s.name })))));
+    const alerts = alertsBySchool.flat();
     root.innerHTML = `
+      ${alerts.length ? `<div class="card"><h2>Alertas</h2><div class="sub">${alerts.length} coisa(s) para olhar</div>${alerts.map((a) => `
+        <div class="warning" style="margin-top:10px${a.level === 'critical' ? ';border-left:3px solid var(--neg)' : ''}"><b>${a.title}</b>${state.school === 'all' ? ` · ${a.school}` : ''}<p style="margin:4px 0 0">${a.detail}</p></div>`).join('')}</div>`
+        : '<div class="card"><h2>Alertas</h2><div class="sub">Nenhum alerta agora.</div></div>'}
       <div class="top">
         <div class="card hero">
           <div class="label">Lucro do ano ${state.year} (competência, já descontadas as provisões)</div>
@@ -253,6 +268,10 @@ const views = {
 
   async employees(root) {
     root.innerHTML = `<p class="note">Equipe de <b>${schoolName()}</b>. Cadastre cada colaborador com a data de admissão para calcular a rescisão de cada um. Encargos, 13º e férias saem do salário (percentuais em Parâmetros). Benefícios (VT/VA) entram só na folha mensal. "Férias já gozadas" é o número de períodos aquisitivos completos que o colaborador já tirou.</p>`;
+    const exportRow = document.createElement('div'); exportRow.className = 'add';
+    const period = new Date().toISOString().slice(0, 7);
+    exportRow.append(exportButton(`Exportar folha de ${period} (CSV)`, `export/payroll?school_id=${targetSchool()}&period=${period}`));
+    root.append(exportRow);
     await crud(root, 'employees', [
       { key: 'name', label: 'Nome', type: 'text' },
       { key: 'cpf', label: 'CPF', type: 'text' },
@@ -339,6 +358,9 @@ const views = {
       },
     });
     renderSplitForm(root, 'bills', { fields: fields.filter((f) => f.key !== 'supplier_id'), defaults: { category: 'Segurança', period: currentPeriod, due_date: `${currentPeriod}-10` } });
+    const exportRow = document.createElement('div'); exportRow.className = 'add';
+    exportRow.append(exportButton(`Exportar contas pagas de ${currentPeriod} (CSV)`, `export/bills?school_id=${id}&period=${currentPeriod}`));
+    root.append(exportRow);
   },
 
   async suppliers(root) {
@@ -459,10 +481,215 @@ const views = {
     const today = new Date().toISOString().slice(0, 10);
     await crud(root, 'entries', fields, { extra: { school_id: targetSchool() }, query: `school_id=${targetSchool()}&year=${state.year}`, defaults: { date: today, type: 'expense', category: 'Luz', one_off: 0 } });
     renderSplitForm(root, 'entries', { fields: fields.filter((f) => f.key !== 'type'), defaults: { date: today, type: 'expense', category: 'Material de limpeza', one_off: 1 } });
+    const exportRow = document.createElement('div'); exportRow.className = 'add';
+    exportRow.append(exportButton(`Exportar lançamentos de ${state.year} (CSV)`, `export/entries?school_id=${targetSchool()}&year=${state.year}`));
+    root.append(exportRow);
+  },
+
+  async statement(root) {
+    root.innerHTML = `<p class="note">DRE de <b>${state.school === 'all' ? 'todas as escolas' : schoolName()}</b>, ${state.year}. Cada categoria de despesa cai num grupo (mapa fixo por enquanto); o resultado abaixo é sempre igual ao lucro do Painel — só muda em qual linha cada custo aparece.</p>`;
+    const s = await api('GET', `statement?year=${state.year}&school=${state.school}`);
+    if (s.unclassified.length) root.insertAdjacentHTML('beforeend', `<div class="warning" style="margin-bottom:14px">Categoria(s) sem grupo, em "Não classificado": <b>${s.unclassified.join(', ')}</b>.</div>`);
+    const t = document.createElement('table');
+    t.innerHTML = `<tr><th>Grupo</th><th>Valor</th></tr>${s.groups.map((g) => `<tr><td>${g.group}</td><td class="${cls(g.amount)}">${brl(g.amount)}</td></tr>`).join('')}<tr class="strong"><td>Resultado</td><td class="${cls(s.result)}">${brl(s.result)}</td></tr>`;
+    const w = document.createElement('div'); w.className = 'table-wrap'; w.append(t);
+    root.append(card('DRE do ano', 'Receita, deduções e custos por grupo (competência)', null, w));
+    const exportRow = document.createElement('div'); exportRow.className = 'add';
+    exportRow.append(exportButton(`Exportar DRE de ${schoolName()} (CSV)`, `export/statement?school_id=${targetSchool()}&year=${state.year}`));
+    if (state.school === 'all') exportRow.insertAdjacentHTML('beforeend', '<span class="note">A exportação é sempre de uma escola por vez.</span>');
+    root.append(exportRow);
+  },
+
+  async metrics(root) {
+    const single = state.school !== 'all';
+    root.innerHTML = `<p class="note">Indicadores de saúde do negócio${single ? ` de <b>${schoolName()}</b>` : ', comparando Novo Mundo e CIC'}. Crianças ativas conta as de hoje (pública + particular). Ponto de equilíbrio: quantas crianças seriam precisas, no total, para cobrir os custos fixos. Custo variável considera Alimentação e Material.</p>`;
+    const fmt = { money: (v) => (v != null ? brl0(v) : '—'), pct: (v) => (v != null ? pct(v) : '—'), children: (v) => (v != null ? `${v} crianças` : '—'), n: (v) => (v ?? '—') };
+    if (single) {
+      const m = await api('GET', `metrics?year=${state.year}&school=${state.school}`);
+      const kpi = (t, v, s = '') => `<div class="card kpi"><div class="t">${t}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
+      root.insertAdjacentHTML('beforeend', `<div class="kpis">
+        ${kpi('Crianças ativas', fmt.n(m.activeChildren))}
+        ${kpi('Custo por criança', fmt.money(m.costPerChild), 'custos do ano ÷ crianças ativas')}
+        ${kpi('Receita por criança', fmt.money(m.revenuePerChild))}
+        ${kpi('Folha sobre receita', fmt.pct(m.payrollOverRevenue), 'salários + benefícios + encargos + 13º + férias')}
+        ${kpi('Ponto de equilíbrio', fmt.children(m.breakEven), 'crianças necessárias para cobrir os custos fixos')}
+      </div>`);
+      return;
+    }
+    const all = await api('GET', `metrics?year=${state.year}&school=all`);
+    const rows = [
+      ['Crianças ativas', 'activeChildren', fmt.n, null],
+      ['Custo por criança', 'costPerChild', fmt.money, 'costPerChild'],
+      ['Receita por criança', 'revenuePerChild', fmt.money, 'revenuePerChild'],
+      ['Folha sobre receita', 'payrollOverRevenue', fmt.pct, 'payrollOverRevenue'],
+      ['Ponto de equilíbrio', 'breakEven', fmt.children, 'breakEven'],
+      ['Margem', 'margin', fmt.pct, 'margin'],
+    ];
+    const t = document.createElement('table');
+    t.innerHTML = `<tr><th>Indicador</th>${all.schools.map((s) => `<th>${s.name}</th>`).join('')}<th>Consolidado</th></tr>` +
+      rows.map(([label, key, format, winnerKey]) => `<tr><td>${label}</td>${all.schools.map((s) => {
+        const wins = winnerKey && all.winners[winnerKey] === s.id;
+        return `<td class="${wins ? 'pos' : ''}">${format(s[key])}${wins ? ' ★' : ''}</td>`;
+      }).join('')}<td>${format(all.consolidated[key])}</td></tr>`).join('');
+    const w = document.createElement('div'); w.className = 'table-wrap'; w.append(t);
+    root.append(card('Comparativo entre escolas', '★ marca a melhor escola em cada linha (menor custo por criança e menor ponto de equilíbrio contam como melhor)', null, w));
+
+    const rel = await api('GET', `report?year=${state.year}&school=all`);
+    const mt = document.createElement('table');
+    mt.innerHTML = `<tr><th></th>${rel.months.map((m) => `<th>${MONTHS[m.month - 1]}</th>`).join('')}</tr>
+      <tr><td>Margem</td>${rel.months.map((m) => `<td class="${cls(m.result)}">${m.revenue ? pct(m.result / m.revenue) : '—'}</td>`).join('')}</tr>`;
+    const mw = document.createElement('div'); mw.className = 'table-wrap'; mw.append(mt);
+    root.append(card('Margem mensal (consolidada)', 'Lucro do mês ÷ receita do mês', null, mw));
+  },
+
+  async scenarios(root) {
+    const id = targetSchool();
+    root.innerHTML = `<p class="note">Simule sem alterar nada de <b>${schoolName()}</b>: atrasar o repasse, contratar, demitir (com a rescisão calculada de verdade) ou cortar uma categoria de despesa. "Simular" nunca grava; "Salvar" só guarda a lista de ajustes, para reabrir depois.</p>`;
+
+    const employees = await api('GET', `employees?school_id=${id}`);
+    let adjustments = [];
+    const ADJUSTMENT_LABELS = { delay_transfer: 'Atrasar o repasse', hire: 'Contratar', terminate: 'Demitir', cut_expense: 'Cortar despesa' };
+    const describe = (a) => {
+      if (a.type === 'delay_transfer') return `Atrasar o repasse em ${a.months} mês(es)`;
+      if (a.type === 'hire') return `Contratar por ${brl(a.salary)}/mês a partir de ${a.hire_date || '—'}`;
+      if (a.type === 'terminate') return `Demitir ${employees.find((e) => e.id === a.employee_id)?.name || a.employee_id} em ${a.date}`;
+      if (a.type === 'cut_expense') return `Cortar ${pct(a.pct)} de "${a.category}"`;
+      return JSON.stringify(a);
+    };
+
+    const listEl = document.createElement('div'); listEl.className = 'note';
+    const renderList = () => { listEl.innerHTML = adjustments.length ? `<ul>${adjustments.map((a, i) => `<li>${describe(a)} <button class="sec" data-i="${i}">remover</button></li>`).join('')}</ul>` : 'Nenhum ajuste ainda.'; };
+    listEl.onclick = (e) => { const i = e.target.dataset.i; if (i !== undefined) { adjustments.splice(Number(i), 1); renderList(); } };
+
+    const builder = document.createElement('div'); builder.className = 'add';
+    const typeSel = field({ type: 'select', options: Object.entries(ADJUSTMENT_LABELS) }, 'delay_transfer', () => showFields());
+    const fieldsWrap = document.createElement('div'); fieldsWrap.className = 'add';
+    const draft = {};
+    function showFields() {
+      fieldsWrap.innerHTML = '';
+      const specs = {
+        delay_transfer: [{ key: 'months', label: 'Meses de atraso', type: 'num' }],
+        hire: [{ key: 'salary', label: 'Salário', type: 'money' }, { key: 'benefits', label: 'Benefícios', type: 'money' }, { key: 'hire_date', label: 'A partir de', type: 'date' }],
+        terminate: [{ key: 'employee_id', label: 'Colaborador', type: 'select', options: employees.map((e) => [e.id, e.name]) }, { key: 'date', label: 'Data', type: 'date' }, { key: 'severance_type', label: 'Motivo', type: 'select', options: [['without_cause', 'Sem justa causa'], ['mutual_agreement', 'Acordo'], ['resignation', 'Pedido de demissão']] }],
+        cut_expense: [{ key: 'category', label: 'Categoria', type: 'select', options: CATEGORY_OPTIONS }, { key: 'pct', label: 'Corte (%)', type: 'num' }],
+      };
+      for (const f of specs[typeSel.value]) {
+        const lab = document.createElement('label'); lab.append(f.label);
+        const el = field(f, undefined, (v) => (draft[f.key] = v));
+        draft[f.key] = readField(f, el);
+        lab.append(el); fieldsWrap.append(lab);
+      }
+    }
+    showFields();
+    const addBtn = document.createElement('button'); addBtn.textContent = 'Adicionar ajuste';
+    addBtn.onclick = () => {
+      const entry = { type: typeSel.value, ...draft };
+      if (entry.pct != null) entry.pct = entry.pct / 100; // the field shows 0–100, the API expects 0–1
+      adjustments.push(entry); renderList();
+    };
+    const typeLab = document.createElement('label'); typeLab.append('Ajuste'); typeLab.append(typeSel);
+    builder.append(typeLab, fieldsWrap, addBtn);
+    root.append(card('Montar cenário', 'Adicione um ou mais ajustes e simule', null, builder));
+    root.append(listEl); renderList();
+
+    const simBtn = document.createElement('button'); simBtn.textContent = 'Simular';
+    const resultEl = document.createElement('div');
+    simBtn.onclick = async () => {
+      const r = await api('POST', 'scenarios/simulate', { school_id: id, year: state.year, adjustments });
+      const row = (label, key, fmt) => `<tr><td>${label}</td><td>${fmt(r.base[key])}</td><td>${fmt(r.scenario[key])}</td><td class="${cls(r.scenario[key] - r.base[key])}">${fmt(r.scenario[key] - r.base[key])}</td></tr>`;
+      const t = document.createElement('table');
+      t.innerHTML = `<tr><th></th><th>Base</th><th>Cenário</th><th>Diferença</th></tr>
+        ${row('Lucro do ano', 'result', brl)}
+        ${row('Pior saldo de caixa', 'minBalance', brl)}
+        ${row('Saldo final', 'finalBalance', brl)}
+        ${row('Reserva necessária', 'reserveNeeded', brl)}`;
+      resultEl.innerHTML = '';
+      const w = document.createElement('div'); w.className = 'table-wrap'; w.append(t); resultEl.append(w);
+      if (r.warnings.length) resultEl.insertAdjacentHTML('beforeend', `<div class="warning" style="margin-top:10px">${r.warnings.join('<br>')}</div>`);
+    };
+    const nameInput = document.createElement('input'); nameInput.type = 'text'; nameInput.placeholder = 'Nome para salvar (opcional)';
+    const saveBtn = document.createElement('button'); saveBtn.textContent = 'Salvar cenário'; saveBtn.className = 'sec';
+    saveBtn.onclick = async () => {
+      if (!nameInput.value) return alert('Dê um nome ao cenário para salvar.');
+      await api('POST', 'scenarios', { school_id: id, name: nameInput.value, adjustments });
+      render();
+    };
+    const actions = document.createElement('div'); actions.className = 'add'; actions.append(simBtn, nameInput, saveBtn);
+    root.append(card('Simular', 'Compara com a base sem alterar nenhum dado real', null, actions));
+    root.append(resultEl);
+
+    const saved = await api('GET', `scenarios?school_id=${id}`);
+    if (saved.length) {
+      const savedList = document.createElement('div'); savedList.className = 'table-wrap';
+      const st = document.createElement('table');
+      st.innerHTML = `<tr><th>Cenário</th><th></th></tr>${saved.map((s) => `<tr><td>${s.name}</td><td class="actions"><button class="sec" data-del="${s.id}">Excluir</button></td></tr>`).join('')}</table>`;
+      st.onclick = async (e) => { const del = e.target.dataset.del; if (del && confirm('Excluir este cenário salvo?')) { await api('DELETE', `scenarios/${del}`); render(); } };
+      savedList.append(st);
+      root.append(card('Cenários salvos', '', null, savedList));
+    }
+  },
+
+  async bank(root) {
+    const id = targetSchool();
+    root.innerHTML = `<p class="note">Importe o extrato do banco (arquivo .ofx) de <b>${schoolName()}</b>. Movimentos já importados não duplicam. Cada movimento pode ser confirmado contra a conta ou mensalidade sugerida (baixando-a de verdade) ou lançado manualmente numa categoria, quando não há sugestão.</p>`;
+
+    const importRow = document.createElement('div'); importRow.className = 'add';
+    const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.accept = '.ofx,.txt';
+    const importBtn = document.createElement('button'); importBtn.textContent = 'Importar extrato (.ofx)';
+    importBtn.onclick = async () => {
+      const file = fileInput.files[0];
+      if (!file) return alert('Escolha um arquivo .ofx primeiro.');
+      const ofx = await file.text();
+      const r = await api('POST', 'bank/import', { school_id: id, ofx });
+      alert(`${r.imported} movimento(s) novo(s) importado(s)${r.duplicates ? `, ${r.duplicates} já existiam` : ''}.`);
+      fileInput.value = '';
+      render();
+    };
+    importRow.append(fileInput, importBtn); root.append(importRow);
+
+    const list = await api('GET', `bank/list?school=${id}`);
+    const [bills, tuitions] = await Promise.all([api('GET', `bills?school_id=${id}`), api('GET', `tuition?school_id=${id}`)]);
+    const billById = new Map(bills.map((b) => [b.id, b]));
+    const tuitionById = new Map(tuitions.map((t) => [t.id, t]));
+    const describeSuggestion = (t) => {
+      if (!t.suggested_kind) return '—';
+      if (t.suggested_kind === 'bill') { const b = billById.get(t.suggested_id); return b ? `Conta: ${b.description}` : 'Conta (removida)'; }
+      const c = tuitionById.get(t.suggested_id); return c ? `Mensalidade: ${c.period}` : 'Mensalidade (removida)';
+    };
+    const wrap = document.createElement('div'); wrap.className = 'table-wrap';
+    const t = document.createElement('table');
+    t.innerHTML = `<tr><th>Data</th><th>Descrição</th><th>Valor</th><th>Sugestão</th><th>Status</th><th></th></tr>${list.map((tx) => `
+      <tr>
+        <td>${tx.date}</td><td>${tx.name || '—'}</td>
+        <td class="${cls(tx.amount)}">${brl(tx.amount)}</td>
+        <td>${describeSuggestion(tx)}</td>
+        <td>${tx.reconciled ? '<span class="pos">Conciliado</span>' : '<span class="neg">Pendente</span>'}</td>
+        <td class="actions">${tx.reconciled ? '' : tx.suggested_kind
+          ? `<button data-confirm="${tx.id}">Confirmar</button><button class="sec" data-manual="${tx.id}">Lançar manualmente</button>`
+          : `<button class="sec" data-manual="${tx.id}">Lançar manualmente</button>`}</td>
+      </tr>`).join('')}`;
+    t.onclick = async (e) => {
+      const confirmId = e.target.dataset.confirm;
+      const manualId = e.target.dataset.manual;
+      if (confirmId) {
+        if (!confirm('Confirmar a sugestão? Isso baixa a conta/mensalidade de verdade.')) return;
+        await api('POST', `bank/${confirmId}/confirm`, {});
+        return render();
+      }
+      if (manualId) {
+        const category = prompt('Categoria do lançamento:', 'Outros');
+        if (category === null) return;
+        const description = prompt('Descrição:', '');
+        if (description === null) return;
+        await api('POST', `bank/${manualId}/manual`, { category, description });
+        render();
+      }
+    };
+    wrap.append(t); root.append(card('Movimentos importados', list.length ? '' : 'Nenhum movimento importado ainda.', null, wrap));
   },
 
   async settings(root) {
-    root.innerHTML = '<p class="note">Percentuais por escola. <b>Encargos</b>: FGTS 8% (Simples Nacional); se a escola não for do Simples, some INSS patronal/RAT/terceiros. <b>Imposto</b>: alíquota efetiva sobre a receita — confirme com a contabilidade. <b>Saldo inicial</b>: caixa em 1º de janeiro. <b>Crianças matriculadas</b>: campo manual, usado para dividir compras proporcionalmente entre as escolas (independente da aba Crianças). <b>Capacidade</b>: vagas totais, para a ocupação. <b>Valor por criança-dia (Prefeitura)</b>: assim que houver ao menos uma criança de vaga da Prefeitura cadastrada, a receita passa a ser crianças × dias letivos × esse valor, no lugar da receita manual "segue calendário".</p>';
+    root.innerHTML = '<p class="note">Percentuais por escola. <b>Encargos</b>: FGTS 8% (Simples Nacional); se a escola não for do Simples, some INSS patronal/RAT/terceiros. <b>Imposto</b>: alíquota efetiva sobre a receita — confirme com a contabilidade. <b>Saldo inicial</b>: caixa em 1º de janeiro. <b>Crianças matriculadas</b>: campo manual, usado para dividir compras proporcionalmente entre as escolas (independente da aba Crianças). <b>Capacidade</b>: vagas totais, para a ocupação. <b>Valor por criança-dia (Prefeitura)</b>: assim que houver ao menos uma criança de vaga da Prefeitura cadastrada, a receita passa a ser crianças × dias letivos × esse valor, no lugar da receita manual "segue calendário". <b>Rotatividade anual</b>: liga a reserva mensal de rescisão (0% = desligada); é uma provisão no lucro, nunca sai do caixa até alguém realmente sair — confirme o número real com a contabilidade.</p>';
     const schools = await api('GET', 'schools');
     const fields = [
       { key: 'name', label: 'Nome', type: 'text' },
@@ -474,6 +701,7 @@ const views = {
       { key: 'capacity', label: 'Capacidade (vagas)', type: 'num' },
       { key: 'child_daily_rate', label: 'Valor por criança-dia (Prefeitura)', type: 'money' },
       { key: 'tuition_due_day', label: 'Dia de vencimento das mensalidades', type: 'num' },
+      { key: 'turnover_pct', label: 'Rotatividade anual (%) — reserva de rescisão', type: 'num' },
     ];
     const t = document.createElement('table');
     t.innerHTML = `<tr>${fields.map((f) => `<th>${f.label}</th>`).join('')}</tr>`;
@@ -652,7 +880,9 @@ function renderSeverancePanel(root, employee) {
 // ---------- Boot ----------
 async function render() {
   // Records belong to one school: with "All" in the filter, switch to the first one instead of silently swapping later.
-  if (state.tab !== 'dashboard' && state.school === 'all' && state.schools.length) {
+  // Dashboard, DRE and Indicadores all have a meaningful consolidated ("all schools") view, so they're exempt.
+  const ALLOWS_ALL_SCHOOLS = ['dashboard', 'statement', 'metrics'];
+  if (!ALLOWS_ALL_SCHOOLS.includes(state.tab) && state.school === 'all' && state.schools.length) {
     state.school = state.schools[0].id;
     $('#school').value = state.school;
   }

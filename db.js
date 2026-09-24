@@ -21,6 +21,7 @@ export const School = mongoose.model('School', new Schema({
   capacity: { type: Number, default: null, min: 0 }, // total slots, for occupancy
   child_daily_rate: { type: Number, default: null, min: 0 }, // amount per public-slot child, per school day
   tuition_due_day: { type: Number, default: 10, min: 1, max: 28 },
+  turnover_pct: { type: Number, default: 0, min: 0, max: 100 }, // yearly staff turnover; 0 = severance reserve off
 }, schemaOptions));
 
 export const Employee = mongoose.model('Employee', new Schema({
@@ -139,6 +140,25 @@ export const DEFAULT_FACTOR = [0, 0.5, 1, 1, 1, 1, 0, 1, 1, 1, 1, 1];
 // Default school days per month (a reasonable guess; the school adjusts it in the Children tab).
 // Months with no city-hall payment (see DEFAULT_FACTOR) also have few or no school days.
 export const DEFAULT_SCHOOL_DAYS = [0, 10, 20, 20, 20, 20, 0, 20, 20, 20, 20, 20];
+
+export const BankTransaction = mongoose.model('BankTransaction', new Schema({
+  school_id: schoolIdField,
+  fitid: { type: String, default: '' },
+  date: { type: String, required: true, match: /^\d{4}-\d{2}-\d{2}$/ },
+  amount: { type: Number, required: true },
+  name: { type: String, default: '' },
+  fingerprint: { type: String, required: true, unique: true, index: true },
+  suggested_kind: { type: String, enum: ['bill', 'tuition', null], default: null },
+  suggested_id: { type: Schema.Types.ObjectId, default: null },
+  reconciled: { type: Boolean, default: false },
+  entry_id: { type: Schema.Types.ObjectId, ref: 'Entry', default: null },
+}, schemaOptions));
+
+export const Scenario = mongoose.model('Scenario', new Schema({
+  school_id: schoolIdField,
+  name: { type: String, required: true },
+  adjustments: { type: Schema.Types.Mixed, default: [] }, // free-form list, validated by scenarios.js, never touches other collections
+}, schemaOptions));
 
 export async function ensureCalendar(schoolId, year) {
   await Calendar.bulkWrite(DEFAULT_FACTOR.map((factor, i) => ({
