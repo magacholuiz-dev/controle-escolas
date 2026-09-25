@@ -80,6 +80,9 @@ export const Bill = mongoose.model('Bill', new Schema({
   group_id: { type: String, default: null, index: true },
   total_amount: { type: Number, default: null },
   split_pct: { type: Number, default: null },
+  installment_group_id: { type: String, default: null, index: true }, // one per installment purchase (all its parcels share it)
+  installment_no: { type: Number, default: null },
+  installment_count: { type: Number, default: null },
 }, schemaOptions));
 Bill.schema.index({ expense_id: 1, period: 1 }, { unique: true, partialFilterExpression: { expense_id: { $type: 'objectId' } } });
 

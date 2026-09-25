@@ -165,6 +165,50 @@ function renderSplitForm(root, resource, { defaults = {}, fields }) {
   form.append(b); c.append(form, previewEl); root.append(c);
 }
 
+// Installment purchase: "R$ 2.000 in 3x" (total) or "10x of R$ 340" (value of each installment).
+function renderInstallmentForm(root, schoolId, suppliers) {
+  const c = document.createElement('section'); c.className = 'card';
+  c.innerHTML = '<h2>Compra parcelada</h2><div class="sub">Informe o valor total ou o valor de cada parcela: cada parcela vira uma conta a pagar, uma por mês, a partir do 1º vencimento.</div>';
+  const form = document.createElement('div'); form.className = 'add';
+  const today = new Date().toISOString().slice(0, 10);
+  const data = { description: '', category: 'Outros', supplier_id: '', first_due_date: today, count: 3, mode: 'total', value: null };
+  const specs = [
+    { key: 'description', label: 'Descrição', type: 'text' },
+    { key: 'category', label: 'Categoria', type: 'select', options: CATEGORY_OPTIONS },
+    { key: 'supplier_id', label: 'Fornecedor', type: 'select', options: [['', '—'], ...suppliers.map((s) => [s.id, s.name])] },
+    { key: 'first_due_date', label: '1º vencimento', type: 'date' },
+    { key: 'count', label: 'Nº de parcelas', type: 'num' },
+    { key: 'mode', label: 'O valor informado é', type: 'select', options: [['total', 'o total da compra'], ['each', 'o valor de cada parcela']] },
+    { key: 'value', label: 'Valor', type: 'money' },
+  ];
+  const preview = document.createElement('div'); preview.className = 'note'; preview.style.width = '100%';
+  const refresh = () => {
+    const n = Number(data.count), v = Number(data.value);
+    if (!(n >= 1) || !(v > 0)) { preview.textContent = ''; return; }
+    if (data.mode === 'each') { preview.textContent = `${n}x de ${brl(v)} = total de ${brl(v * n)}`; return; }
+    const cents = Math.round(v * 100), base = Math.floor(cents / n), extra = cents - base * n;
+    preview.textContent = extra ? `${n}x de ${brl((base + 1) / 100)} (as últimas ${brl(base / 100)}) = total de ${brl(v)}` : `${n}x de ${brl(base / 100)} = total de ${brl(v)}`;
+  };
+  for (const f of specs) {
+    const lab = document.createElement('label'); lab.append(f.label);
+    const el = field(f, data[f.key], (v) => { data[f.key] = v; refresh(); });
+    lab.append(el); form.append(lab);
+  }
+  const b = document.createElement('button'); b.textContent = 'Lançar parcelas';
+  b.onclick = async () => {
+    try {
+      const r = await api('POST', 'bills/installments', {
+        school_id: schoolId, description: data.description, category: data.category, supplier_id: data.supplier_id || undefined,
+        first_due_date: data.first_due_date, count: Number(data.count),
+        [data.mode === 'total' ? 'total_amount' : 'installment_amount']: data.value,
+      });
+      alert(`${r.count} parcelas lançadas, total de ${brl(r.total)}.`);
+      render();
+    } catch (e) { alert(e.message); }
+  };
+  form.append(b); c.append(form, preview); root.append(c);
+}
+
 const MONTH_OPTIONS = [['', 'padrão da escola'], ...MONTHS.map((m, i) => [i + 1, m])];
 
 // Downloads a CSV export. The server sets Content-Disposition: attachment, so this never navigates
@@ -365,6 +409,7 @@ const views = {
     generate.append(generateBtn); root.append(generate);
 
     const suppliers = await api('GET', 'suppliers');
+    renderInstallmentForm(root, id, suppliers);
     const fields = [
       { key: 'description', label: 'Descrição', type: 'text' },
       { key: 'category', label: 'Categoria', type: 'select', options: CATEGORY_OPTIONS },
@@ -376,8 +421,20 @@ const views = {
     await crud(root, 'bills', fields, {
       extra: { school_id: id }, query: `school_id=${id}`,
       defaults: { category: 'Outros', period: currentPeriod, due_date: `${currentPeriod}-10` },
-      extraColumns: [{ label: 'Status', render: (l) => { const [t, c] = BILL_STATUS[l.status] || ['—', '']; return `<span class="${c}">${t}</span>`; } }],
+      extraColumns: [
+        { label: 'Parcela', render: (l) => (l.installment_count ? `${l.installment_no}/${l.installment_count}` : '—') },
+        { label: 'Status', render: (l) => { const [t, c] = BILL_STATUS[l.status] || ['—', '']; return `<span class="${c}">${t}</span>`; } },
+      ],
       actions: (row, cell) => {
+        if (row.installment_group_id && row.status !== 'paid') {
+          const all = document.createElement('button'); all.textContent = 'Excluir compra'; all.className = 'sec';
+          all.title = 'Remove todas as parcelas ainda não pagas desta compra';
+          all.onclick = async () => {
+            if (!confirm(`Excluir todas as parcelas em aberto de "${row.description}"? As já pagas ficam.`)) return;
+            await api('DELETE', `bills/${row.id}?installments=1`); render();
+          };
+          cell.append(all);
+        }
         if (row.status === 'paid') {
           const b = document.createElement('button'); b.textContent = 'Desfazer'; b.className = 'sec';
           b.onclick = async () => { if (confirm('Desfazer o pagamento? O lançamento correspondente será removido.')) { await api('POST', `bills/${row.id}/undo`); render(); } };

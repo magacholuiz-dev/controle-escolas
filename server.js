@@ -12,6 +12,7 @@ import { parseOfx } from './ofx.js';
 import { fingerprint, suggest } from './reconciliation.js';
 import { prorate } from './proration.js';
 import { billStatus, generateMonthBills, dueSummary } from './bills.js';
+import { buildInstallments } from './installments.js';
 import { validateChild, occupancy, isActiveOn } from './children.js';
 import { calculateCharge, generateMonthTuition, overdueBracket, delinquency, chargeMessage } from './tuition.js';
 import { buildStatement } from './statement.js';
@@ -321,6 +322,28 @@ async function generateBills({ school_id, period }) {
   const fresh = candidates.filter((c) => !existing.has(String(c.expense_id)));
   if (fresh.length) await Bill.insertMany(fresh, { ordered: false });
   return { created: fresh.length };
+}
+
+// An installment purchase ("R$ 2.000 in 3x" or "10x of R$ 340"): one bill per installment, monthly,
+// all sharing `installment_group_id` so the screen can show "2/3" and remove the unpaid ones together.
+async function createInstallments(user, body, allowedIds) {
+  const { school_id, supplier_id, description, category, first_due_date, count, total_amount, installment_amount } = body;
+  requireId(school_id, 'school_id');
+  checkAllowed(allowedIds, school_id);
+  if (!String(description || '').trim()) throw new InputError('descrição é obrigatória');
+  if (supplier_id) {
+    requireId(supplier_id, 'supplier_id');
+    if (!(await Supplier.exists({ _id: supplier_id }))) throw new InputError('fornecedor não encontrado');
+  }
+  const { total, installments } = buildInstallments({ total: total_amount, installmentAmount: installment_amount, count, firstDueDate: first_due_date });
+  const installment_group_id = randomUUID();
+  const docs = await Bill.insertMany(installments.map((p) => ({
+    school_id, supplier_id: supplier_id || null, description: String(description).trim(), category: category || 'Outros',
+    period: p.period, due_date: p.due_date, amount: p.amount,
+    installment_group_id, installment_no: p.number, installment_count: p.count,
+  })));
+  await audit(user, 'bills.installments', { entity: 'bills', entity_id: docs[0]._id, school_id, after: { description: String(description).trim(), parcelas: installments.length, total, primeira: installments[0].amount } });
+  return { installment_group_id, count: installments.length, total, ids: docs.map((d) => String(d._id)) };
 }
 
 async function payBill(user, id, { amount_paid, paid_at, payment_method }) {
@@ -663,8 +686,9 @@ async function api(req, res, url) {
     return json(res, 404, { error: 'exportação não encontrada' });
   }
 
-  if (resource === 'bills' && (seg2 === 'generate' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
+  if (resource === 'bills' && (seg2 === 'generate' || seg2 === 'installments' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
     if (seg2 === 'generate' && req.method === 'POST') { const body = await readBody(req); checkAllowed(allowedIds, requireId(body.school_id, 'school_id')); return json(res, 201, await generateBills(body)); }
+    if (seg2 === 'installments' && req.method === 'POST') return json(res, 201, await createInstallments(user, await readBody(req), allowedIds));
     if (seg2 === 'panel' && req.method === 'GET') { const schoolParam = q.get('school') || 'all'; if (schoolParam !== 'all') checkAllowed(allowedIds, requireId(schoolParam, 'school')); return json(res, 200, await billsPanel(schoolParam, Number(q.get('days')) || 7, allowedIds)); }
     if (seg3 === 'pay' && req.method === 'POST') { const bill = await Bill.findById(requireId(seg2)).select('school_id').lean(); if (!bill) return json(res, 404, { error: 'conta não encontrada' }); checkAllowed(allowedIds, bill.school_id); return json(res, 200, await payBill(user, seg2, await readBody(req))); }
     if (seg3 === 'undo' && req.method === 'POST') { const bill = await Bill.findById(requireId(seg2)).select('school_id').lean(); if (!bill) return json(res, 404, { error: 'conta não encontrada' }); checkAllowed(allowedIds, bill.school_id); return json(res, 200, await undoBillPayment(user, seg2)); }
@@ -788,6 +812,11 @@ async function api(req, res, url) {
     const doc = await model.findById(id);
     if (!doc) return json(res, 404, { error: 'não encontrado' });
     if (scoped) checkAllowed(allowedIds, doc.school_id);
+    if (q.get('installments') && doc.installment_group_id) {
+      const removed = await model.deleteMany({ installment_group_id: doc.installment_group_id, paid_at: null });
+      await audit(user, 'bills.installments_delete', { entity: 'bills', entity_id: doc._id, school_id: doc.school_id, before: { description: doc.description, parcelas_removidas: removed.deletedCount } });
+      return json(res, 200, { ok: true, removed: removed.deletedCount });
+    }
     if (q.get('group') && doc.group_id) {
       const removed = await model.deleteMany({ group_id: doc.group_id });
       await audit(user, `${resource}.delete`, { entity: resource, entity_id: doc._id, school_id: doc.school_id, before: { ...docSummary(resource, doc), group_id: doc.group_id, group_removed: removed.deletedCount } });

@@ -1,7 +1,7 @@
 # Roadmap
 
 Every loop follows the [process](./LOOP_PROCESS.md) and has a spec in [`specs/`](./specs/). Loops 0
-through 10 are all **Done**.
+through 11 are all **Done**.
 
 ## Loops
 
@@ -18,6 +18,7 @@ through 10 are all **Done**.
 | 8 | [Users, permissions and audit log](./specs/loop-08-usuarios-permissoes.md) | L | 0 | Login, roles per school, audit log | the market in general | **Done** |
 | 9 | [Export for the accountant and attachments](./specs/loop-09-exportacao-e-anexos.md) | M | 1, 4 | CSV export (payroll, DRE, paid bills, entries) | Nibo, Unimestre | **Done** |
 | 10 | [Bank reconciliation (OFX)](./specs/loop-10-conciliacao-bancaria.md) | M | 1, 3 | Import a statement, suggest and confirm payments | Nibo, Proesc | **Done** |
+| 11 | [Installment purchases](./specs/loop-11-parcelas.md) | S | 1 | "2000 in 3x" or "10x of 340" becomes monthly bills | owner request | **Done** |
 
 Sizes: **S** ≈ 1–2 days · **M** ≈ 3–5 days · **L** ≈ 1–2 weeks (one person, with tests and VERIFY).
 
@@ -127,3 +128,4 @@ From Loop 0 (details in its spec):
 | 2026-09-22 | **Loop 2 Done**: revenue derived from enrollment (children × school days × rate per child-day), with the manual revenue "superseded" and a documented scope cut (no dated Contract record); Children tab, occupancy on the Dashboard; fixed a database-name collision in the API tests |
 | 2026-09-22 | **Loop 1 Done**: bills to pay (due date, payment, suppliers, splitting), due-bills card on the Dashboard; fixed a Loop 0 carry-over (nonexistent id → 404 on every resource) |
 | 2026-09-21 | Roadmap created from the benchmark (`BENCHMARK.md`): 11 loops (0 to 10) in Draft |
+| 2026-09-25 | **Loop 11 Done**: installment purchases (total or per-installment value, monthly bills, remove unpaid ones together). Carry-over: future unpaid installments aren't in the forward cash projection yet |

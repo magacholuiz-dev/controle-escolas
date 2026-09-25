@@ -51,6 +51,7 @@ creates every director from the "Usuários" tab; there's no self-registration.
   period (Tuition tab). Lateness is classified into brackets (1–30, 31–60, 60+ days); the Dashboard
   shows the period's delinquency and the list of debtors, with a billing message ready to copy (no
   CPF).
+- **Installment purchases**: on the Bills tab, enter a purchase as "R$ 2.000 in 3x" or "10x of R$ 340"; each installment becomes a monthly bill, paid on its own ("2/3" shows in the list). Cents are distributed so the installments always add up to the total.
 - **Splitting between schools**: any expense, bill or entry can be split between Novo Mundo and CIC
   (evenly, proportional to enrollment, or by a manual percentage).
 - **Income statement (DRE)**: each expense category falls into a cost-center group (payroll,
