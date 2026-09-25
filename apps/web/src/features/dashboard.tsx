@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { Alert, BillsPanel, ConsolidatedReport, MonthResult, Occupancy, TuitionPanel } from '@controle-escolas/contracts';
 import { api } from '@/lib/api';
-import { brl, brl0, dateBr, MONTHS, pct, tone } from '@/lib/format';
+import { brl, brl0, dateBr, isoToMonthBr, MONTHS, pct, tone } from '@/lib/format';
 import { TUITION_STATUS } from '@/lib/messages';
 import { useApp } from '@/lib/store';
 import { useFetch } from '@/lib/useFetch';
@@ -126,7 +126,7 @@ export function DashboardScreen() {
             <tbody>
               {delinquency.data.debtors.map((d) => (
                 <tr key={d.id}>
-                  <td>{d.child}</td>{school === 'all' && <td>{d.school}</td>}<td>{d.period}</td><td>{dateBr(d.due_date)}</td>
+                  <td>{d.child}</td>{school === 'all' && <td>{d.school}</td>}<td>{isoToMonthBr(d.period)}</td><td>{dateBr(d.due_date)}</td>
                   <td>{(TUITION_STATUS[d.bracket] ?? ['—'])[0]}</td><td>{brl(d.amount)}</td>
                   <td><button type="button" className="sec" onClick={() => navigator.clipboard?.writeText(d.message).then(() => notify('Mensagem copiada.')).catch(() => notify(d.message))}>Copiar mensagem</button></td>
                 </tr>

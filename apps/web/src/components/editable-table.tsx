@@ -20,13 +20,15 @@ export interface EditableTableProps {
   totalKey?: string;
   extraColumns?: { label: string; render: (row: never) => ReactNode }[];
   actions?: (row: never, ctx: { reload: () => void }) => ReactNode;
+  /** overrides the delete confirmation text for a row */
+  removeMessage?: (row: never) => string | undefined;
   /** bump to refetch from the outside */
   refreshKey?: number;
 }
 
 // Generic editable list: change a cell and it saves, "Excluir" asks first, the row at the bottom adds.
 // Replaces the legacy `crud()` helper.
-export function EditableTable({ resource, query = '', fields, extra = {}, defaults = {}, totalKey, extraColumns = [], actions, refreshKey = 0 }: EditableTableProps) {
+export function EditableTable({ resource, query = '', fields, extra = {}, defaults = {}, totalKey, extraColumns = [], actions, removeMessage, refreshKey = 0 }: EditableTableProps) {
   const list = useFetch<Row[]>(`${resource}?${query}`);
   const { reload: refetch } = list;
   useEffect(() => { if (refreshKey) refetch(); }, [refreshKey, refetch]);
@@ -42,7 +44,8 @@ export function EditableTable({ resource, query = '', fields, extra = {}, defaul
   const save = (row: Row, key: string, value: FieldValue) => run(async () => { await api.put(`${resource}/${row.id}`, { [key]: value }); reload(); });
   const remove = async (row: Row) => {
     const grouped = !!row.group_id;
-    const ok = await confirm(grouped ? 'Este item foi dividido entre as escolas. Excluir a divisão inteira (nas duas escolas)?' : 'Excluir este item?');
+    const custom = removeMessage?.(row as never);
+    const ok = await confirm(custom ?? (grouped ? 'Este item foi dividido entre as escolas. Excluir a divisão inteira (nas duas escolas)?' : 'Excluir este item?'));
     if (ok) await run(async () => { await api.del(`${resource}/${row.id}${grouped ? '?group=1' : ''}`); reload(); });
   };
   const add = () => run(async () => {

@@ -13,7 +13,7 @@ test('login: guarded pages redirect, wrong password is refused, the session surv
   await page.getByLabel('E-mail').fill(OWNER.email);
   await page.getByLabel('Senha').fill('wrong-password');
   await page.getByRole('button', { name: 'Entrar' }).click();
-  await expect(page.locator('.login-error')).toContainText('email ou senha inválidos');
+  await expect(page.locator('.login-error')).toContainText('E-mail ou senha inválidos');
 
   await login(page);
   await page.reload();
@@ -74,7 +74,7 @@ test('severance: simulate, then apply — the employee is terminated and the cos
   await page.locator('.edit tbody tr', { has: page.locator('input[value="Ana Silva"]') }).getByRole('button', { name: 'Rescisão' }).click();
   await expect(page.getByRole('heading', { name: 'Rescisão de Ana Silva' })).toBeVisible();
   const panel = page.locator('section.card', { hasText: 'Rescisão de Ana Silva' });
-  await panel.getByLabel('Data da rescisão').fill('2026-09-22');
+  await panel.getByLabel('Data da rescisão').fill('22/09/2026');
   await panel.getByRole('button', { name: 'Calcular' }).click();
   await expect(panel.locator('tr.strong').last()).toContainText(nb(expected.schoolCost.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' })));
 
@@ -104,9 +104,9 @@ test('installments: R$ 2.000 in 3x, pay one, remove the rest of the purchase', a
   await expect(rows.nth(2)).toContainText('3/3');
 
   await rows.nth(0).getByRole('button', { name: 'Pagar' }).click();
-  await expect(page.getByRole('dialog').getByRole('textbox')).toHaveValue('666.67'); // amount
+  await expect(page.getByRole('dialog').getByRole('textbox')).toHaveValue(/^R\$\s666,67$/); // amount, in reais
   await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
-  await expect(page.getByRole('dialog').getByRole('textbox')).toHaveValue(/^\d{4}-\d{2}-\d{2}$/); // date, not the amount left over
+  await expect(page.getByRole('dialog').getByRole('textbox')).toHaveValue(/^\d{2}\/\d{2}\/\d{4}$/); // date as dd/mm/aaaa, not the amount left over
   await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
   await expect(rows.nth(0)).toContainText('Paga');
 
@@ -260,4 +260,83 @@ test('both color schemes render the dashboard', async ({ page }) => {
     const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
     expect(bg).toBe(scheme === 'light' ? 'rgb(245, 242, 234)' : 'rgb(15, 21, 18)');
   }
+});
+
+test('pt-BR inputs: dates as dd/mm/aaaa, money as R$ 1.234,56, errors in Portuguese', async ({ page, request }) => {
+  await login(page);
+  await page.getByRole('link', { name: 'Contas a pagar', exact: true }).click();
+  const add = page.locator('.add', { has: page.getByRole('button', { name: 'Adicionar' }) });
+  const due = add.getByLabel('Vencimento');
+  await expect(due).toHaveAttribute('placeholder', 'dd/mm/aaaa');
+  await due.fill('');
+  await due.pressSequentially('15102026');
+  await expect(due).toHaveValue('15/10/2026'); // slashes are inserted while typing
+  const amount = add.getByLabel('Valor', { exact: true });
+  await amount.fill('1234,5');
+  await amount.blur();
+  await expect(amount).toHaveValue(/^R\$\s1\.234,50$/);
+  await add.getByLabel('Descrição').fill('Conta em reais');
+  await add.getByRole('button', { name: 'Adicionar' }).click();
+  const row = page.locator('.edit tbody tr', { has: page.locator('input[value="Conta em reais"]') });
+  await expect(row.getByLabel('Vencimento')).toHaveValue('15/10/2026');
+  await expect(row.getByLabel('Valor', { exact: true })).toHaveValue(/^R\$\s1\.234,50$/);
+  const api = await apiAs(request);
+  const [school] = await api.get<School[]>('schools');
+  const saved = (await api.get<Bill[]>(`bills?school_id=${school?.id}`)).find((b) => b.description === 'Conta em reais');
+  expect(saved).toMatchObject({ due_date: '2026-10-15', amount: 1234.5 }); // the API keeps ISO and plain numbers
+
+  // an impossible date is flagged and not saved
+  await row.getByLabel('Vencimento').fill('31/02/2026');
+  await row.getByLabel('Vencimento').blur();
+  await expect(row.getByLabel('Vencimento')).toHaveAttribute('aria-invalid', 'true');
+  expect((await api.get<Bill[]>(`bills?school_id=${school?.id}`)).find((b) => b.description === 'Conta em reais')?.due_date).toBe('2026-10-15');
+
+  // payment prompts are pt-BR too, and a bad date is refused in Portuguese
+  await row.getByRole('button', { name: 'Pagar' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
+  await page.getByRole('dialog').getByRole('textbox').fill('2026-10-15');
+  await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
+  await expect(page.locator('.toast').last()).toContainText('Data inválida. Use dd/mm/aaaa');
+});
+
+test('recurring debit: rent for several months, edit a paid bill, delete it with its expense, end the recurrence', async ({ page, request }) => {
+  await login(page);
+  await page.getByRole('link', { name: 'Contas a pagar', exact: true }).click();
+  const card = page.locator('section.card', { hasText: 'Débito recorrente' });
+  await card.getByLabel('Descrição').fill('Aluguel fixo');
+  await card.getByLabel('Valor mensal').fill('4400');
+  await card.getByLabel('Dia do vencimento (1 a 28)').fill('5');
+  await card.getByLabel('A partir de').fill('01/2027');
+  await card.getByLabel('Até').fill('03/2027');
+  await card.getByRole('button', { name: 'Lançar recorrência' }).click();
+  await expect(page.locator('.toast').last()).toContainText('3 conta(s) lançada(s), uma por mês.');
+
+  const rows = page.locator('.edit tbody tr', { has: page.locator('input[value="Aluguel fixo"]') });
+  await expect(rows).toHaveCount(3);
+  await expect(rows.nth(0).getByLabel('Vencimento')).toHaveValue('05/01/2027');
+
+  // pay the first, then correct what was paid
+  await rows.nth(0).getByRole('button', { name: 'Pagar' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
+  await expect(rows.nth(0)).toContainText('Paga');
+  const paidAmount = rows.nth(0).getByLabel('Valor pago');
+  await paidAmount.fill('4.500,00');
+  await paidAmount.press('Enter');
+  const api = await apiAs(request);
+  const [school] = await api.get<School[]>('schools');
+  const entries = () => api.get<Entry[]>(`entries?school_id=${school?.id}`).then((l) => l.filter((e) => e.description === 'Aluguel fixo'));
+  await expect.poll(async () => (await entries())[0]?.amount).toBe(4500);
+
+  // deleting the paid bill warns and removes the expense it posted
+  await rows.nth(0).getByRole('button', { name: 'Excluir', exact: true }).click();
+  await expect(page.getByRole('dialog')).toContainText('remove o lançamento de despesa');
+  await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
+  await expect(rows).toHaveCount(2);
+  expect(await entries()).toHaveLength(0);
+
+  // ending the recurrence removes what is still open
+  await rows.nth(0).getByRole('button', { name: 'Encerrar recorrência' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'OK' }).click();
+  await expect(rows).toHaveCount(0);
 });

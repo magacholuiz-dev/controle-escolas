@@ -29,7 +29,7 @@ export type BillStatus = 'pending' | 'overdue' | 'paid';
 export interface Bill extends SchoolScoped {
   supplier_id: string | null; description: string; category: string; period: string; due_date: string; amount: number;
   paid_at: string | null; amount_paid: number | null; group_id: string | null; total_amount: number | null; split_pct: number | null;
-  installment_group_id: string | null; installment_no: number | null; installment_count: number | null; status: BillStatus;
+  installment_group_id: string | null; installment_no: number | null; installment_count: number | null; expense_id?: string | null; status: BillStatus;
 }
 export interface Child extends SchoolScoped {
   name: string; birth_date: string | null; classroom: string; guardian_name: string; guardian_phone: string;

@@ -5,7 +5,7 @@ import type {
   BillDoc, ChildDoc, EmployeeDoc, EntryDoc, ExpenseDoc, M, RevenueDoc, ScenarioDoc, SchoolDoc, SupplierDoc, TuitionDoc,
 } from '../database/schemas';
 import { AuditService } from '../common/audit.service';
-import { requireId, type Body } from '../common/validation';
+import { isIsoDate, requireId, type Body } from '../common/validation';
 import { type AnyModel, Resource, type ResourceConfig } from './resource';
 
 const asAny = <T>(m: M<T>): AnyModel => m as unknown as AnyModel;
@@ -51,12 +51,27 @@ export class ResourcesService {
       {
         name: 'bills', model: asAny(bills), scoped: true, hasDueDate: true,
         cols: ['school_id', 'supplier_id', 'description', 'category', 'period', 'due_date', 'amount'],
-        validate: async (data: Body) => {
+        // A paid bill stays editable: the amount and date actually paid are corrected here, and the ledger entry follows.
+        updateCols: ['amount_paid', 'paid_at'],
+        validate: async (data: Body, existing) => {
           if (data.supplier_id) {
             requireId(data.supplier_id, 'supplier_id');
             if (!(await suppliers.exists({ _id: data.supplier_id as string }))) throw new InputError('fornecedor não encontrado');
           }
+          if ('amount_paid' in data || 'paid_at' in data) {
+            if (!existing?.paid_at) throw new InputError('só é possível corrigir o valor e a data de uma conta já paga');
+            if ('amount_paid' in data && !(Number(data.amount_paid) > 0)) throw new InputError('valor pago deve ser maior que zero');
+            if ('paid_at' in data && !isIsoDate(data.paid_at)) throw new InputError('paid_at inválido (use AAAA-MM-DD)');
+          }
         },
+        afterUpdate: async (id: string) => {
+          const bill = await bills.findById(id).lean();
+          if (bill?.paid_at) {
+            await entries.updateMany({ bill_id: id }, { $set: { date: bill.paid_at, amount: bill.amount_paid ?? bill.amount, category: bill.category, description: bill.description } });
+          }
+        },
+        // Deleting a paid bill also removes the expense it posted, so the ledger never keeps an orphan.
+        afterRemove: async (removed) => { await entries.deleteMany({ bill_id: removed._id as never }); },
       },
     ];
     this.resources = new Map(configs.map((c) => [c.name, new Resource(c, audit)]));

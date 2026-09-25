@@ -1,17 +1,28 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { dateBrToIso, formatMoneyInput, formatNumberInput, isoToBr, isoToMonthBr, maskDateBr, maskMonthBr, monthBrToIso, parseNumberBr } from '@/lib/format';
 
-export type FieldType = 'text' | 'money' | 'num' | 'date' | 'select' | 'bool';
+export type FieldType = 'text' | 'money' | 'num' | 'date' | 'month' | 'select' | 'bool';
 export type Option = [string | number, string];
 export interface FieldSpec { key: string; label: string; type: FieldType; options?: Option[] }
 export type FieldValue = string | number | null;
 
-const isNumeric = (t: FieldType): boolean => t === 'money' || t === 'num';
+// What the input shows for a stored value: dates as dd/mm/aaaa, money as R$ 1.234,56, numbers with a decimal comma.
+function display(spec: FieldSpec, value: FieldValue | undefined): string {
+  if (value === undefined || value === null || value === '') return spec.type === 'select' ? String(spec.options?.[0]?.[0] ?? '') : '';
+  if (spec.type === 'date') return isoToBr(String(value));
+  if (spec.type === 'month') return isoToMonthBr(String(value));
+  if (spec.type === 'money') return formatMoneyInput(Number(value));
+  if (spec.type === 'num') return formatNumberInput(Number(value));
+  return String(value);
+}
 
-// Reads the DOM value back as the field's own type ('' becomes null for numbers).
+// Reads what was typed back as the field's own type: ISO date, number, or null when empty/unreadable.
 export function toValue(spec: FieldSpec, raw: string, checked: boolean): FieldValue {
   if (spec.type === 'bool') return checked ? 1 : 0;
-  if (isNumeric(spec.type)) return raw === '' ? null : Number(raw);
+  if (spec.type === 'money' || spec.type === 'num') return parseNumberBr(raw);
+  if (spec.type === 'date') return raw === '' ? '' : dateBrToIso(raw);
+  if (spec.type === 'month') return raw === '' ? '' : monthBrToIso(raw);
   if (spec.type === 'select') return spec.options?.find((o) => String(o[0]) === raw)?.[0] ?? raw;
   return raw;
 }
@@ -27,10 +38,10 @@ interface Props {
 }
 
 export function FieldInput({ spec, value, onChange, onCommit, id }: Props) {
-  const initial = value ?? (spec.type === 'select' ? (spec.options?.[0]?.[0] ?? '') : '');
-  const [text, setText] = useState<string>(String(initial));
+  const [text, setText] = useState<string>(display(spec, value));
   const [checked, setChecked] = useState(!!value);
-  useEffect(() => { setText(String(value ?? (spec.type === 'select' ? (spec.options?.[0]?.[0] ?? '') : ''))); setChecked(!!value); }, [value, spec.type, spec.options]);
+  const [invalid, setInvalid] = useState(false);
+  useEffect(() => { setText(display(spec, value)); setChecked(!!value); setInvalid(false); }, [value, spec]);
 
   const aria = { id, 'aria-label': spec.label };
 
@@ -54,14 +65,35 @@ export function FieldInput({ spec, value, onChange, onCommit, id }: Props) {
       </select>
     );
   }
+
+  const numeric = spec.type === 'money' || spec.type === 'num';
+  const isDate = spec.type === 'date';
+  const isMonth = spec.type === 'month';
+  const change = (typed: string) => {
+    const t = isDate ? maskDateBr(typed) : isMonth ? maskMonthBr(typed) : typed;
+    setText(t); setInvalid(false);
+    onChange?.(toValue(spec, t, false));
+  };
+  // Leaving the field: tidy the text into its canonical pt-BR shape and, in edit mode, save when valid and changed.
+  const blur = () => {
+    const v = toValue(spec, text, false);
+    if (text !== '' && v === null) { setInvalid(true); return; }
+    setInvalid(false);
+    if (v !== null && v !== '' && numeric) setText(display(spec, v));
+    const before = value === undefined || value === null ? '' : value;
+    if (onCommit && (v ?? '') !== before) onCommit(v);
+  };
   return (
     <input
       {...aria}
-      type={isNumeric(spec.type) ? 'number' : spec.type === 'date' ? 'date' : 'text'}
-      step={isNumeric(spec.type) ? '0.01' : undefined}
+      type="text"
+      inputMode={isDate || isMonth ? 'numeric' : numeric ? 'decimal' : undefined}
+      placeholder={isDate ? 'dd/mm/aaaa' : isMonth ? 'mm/aaaa' : spec.type === 'money' ? 'R$ 0,00' : spec.type === 'num' ? '0' : undefined}
+      maxLength={isDate ? 10 : isMonth ? 7 : undefined}
+      aria-invalid={invalid || undefined}
       value={text}
-      onChange={(e) => { setText(e.target.value); onChange?.(toValue(spec, e.target.value, false)); }}
-      onBlur={() => { if (onCommit && text !== String(value ?? '')) onCommit(toValue(spec, text, false)); }}
+      onChange={(e) => change(e.target.value)}
+      onBlur={blur}
       onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
     />
   );

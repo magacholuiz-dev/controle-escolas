@@ -44,6 +44,7 @@ export const AUDIT_ACTION_LABELS: Record<string, string> = {
   'scenarios.create': 'Salvou cenário', 'scenarios.delete': 'Excluiu cenário',
   'bills.create': 'Cadastrou conta a pagar', 'bills.update': 'Editou conta a pagar', 'bills.delete': 'Excluiu conta a pagar',
   'bills.installments': 'Lançou uma compra parcelada', 'bills.installments_delete': 'Excluiu as parcelas em aberto de uma compra',
+  'bills.recurring_create': 'Lançou um débito recorrente', 'bills.recurring_end': 'Encerrou um débito recorrente',
   'bill.pay': 'Pagou uma conta', 'bill.undo_pay': 'Desfez o pagamento de uma conta',
   'tuition.pay': 'Pagou uma mensalidade', 'tuition.undo_pay': 'Desfez o pagamento de uma mensalidade',
   'bank.confirm': 'Confirmou uma conciliação bancária', 'bank.manual_entry': 'Lançou um movimento bancário manualmente',
@@ -55,4 +56,5 @@ export const AUDIT_FIELD_LABELS: Record<string, string> = {
   category: 'categoria', base_amount: 'valor base', discount: 'desconto', period: 'competência', kind: 'tipo', target_id: 'id',
   amount_paid: 'valor pago', paid_at: 'data do pagamento', group_id: 'grupo', group_removed: 'itens removidos do grupo', school_ids: 'escolas',
   parcelas: 'parcelas', total: 'total', primeira: '1ª parcela', parcelas_removidas: 'parcelas removidas',
+  valor_mensal: 'valor mensal', dia: 'dia do vencimento', de: 'de', ate: 'até', contas: 'contas', contas_removidas: 'contas removidas',
 };

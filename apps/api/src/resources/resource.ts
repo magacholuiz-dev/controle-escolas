@@ -19,6 +19,11 @@ export interface ResourceConfig {
   /** rows carry a due date: listed with a derived status, ordered by due date */
   hasDueDate?: boolean;
   validate?: (data: Body, existing?: Doc | null) => Promise<void>;
+  /** writable on update only (never on create) */
+  updateCols?: readonly string[];
+  /** keeps a linked collection in step after a row changed / before-after it is deleted */
+  afterUpdate?: (id: string) => Promise<void>;
+  afterRemove?: (removed: Doc) => Promise<void>;
 }
 
 const today = (): string => new Date().toISOString().slice(0, 10);
@@ -64,9 +69,9 @@ export class Resource {
   }
 
   async update(user: SessionUser, allowedIds: string[] | null, id: string, body: Body): Promise<{ ok: true }> {
-    const { name, model, cols, scoped, validate } = this.config;
+    const { name, model, cols, updateCols, scoped, validate, afterUpdate } = this.config;
     if (name === 'schools') checkAllowed(allowedIds, id);
-    const data = pickFields(cols, body);
+    const data = pickFields([...cols, ...(updateCols ?? [])], body);
     const existing = await model.findById(id).lean() as Doc | null;
     if (!existing) throw new InputError('não encontrado', 404);
     if (scoped) {
@@ -75,6 +80,7 @@ export class Resource {
     }
     await validate?.(data, existing);
     await model.updateOne({ _id: id }, { $set: data }, { runValidators: true });
+    await afterUpdate?.(id);
     const { before, after, hasChanges } = changedFields(data, existing);
     if (hasChanges) {
       await this.audit.log(user, `${name}.update`, { entity: name, entity_id: id, school_id: existing.school_id ?? (name === 'schools' ? id : null), before, after });
@@ -83,7 +89,7 @@ export class Resource {
   }
 
   async remove(user: SessionUser, allowedIds: string[] | null, id: string, query: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const { name, model, scoped } = this.config;
+    const { name, model, scoped, afterRemove } = this.config;
     if (name === 'schools') throw new InputError('não é possível excluir escolas');
     const doc = await model.findById(id);
     if (!doc) throw new InputError('não encontrado', 404);
@@ -97,7 +103,9 @@ export class Resource {
       return { ok: true, removed: removed.deletedCount };
     }
     if (query.group && doc.group_id) {
+      const groupDocs = afterRemove ? await model.find({ group_id: doc.group_id }).lean() : [];
       const removed = await model.deleteMany({ group_id: doc.group_id });
+      for (const g of groupDocs) await afterRemove?.(g as Doc);
       await this.audit.log(user, `${name}.delete`, {
         entity: name, entity_id: doc._id, school_id: doc.school_id, before: { ...docSummary(name, plain), group_id: doc.group_id, group_removed: removed.deletedCount },
       });
@@ -105,6 +113,7 @@ export class Resource {
     }
     const removedDoc = await model.findOneAndDelete({ _id: id });
     if (!removedDoc) throw new InputError('não encontrado', 404);
+    await afterRemove?.(removedDoc.toObject() as Doc);
     await this.audit.log(user, `${name}.delete`, { entity: name, entity_id: id, school_id: removedDoc.school_id, before: docSummary(name, removedDoc.toObject() as Doc) });
     return { ok: true };
   }

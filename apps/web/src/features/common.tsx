@@ -1,7 +1,7 @@
 'use client';
 import { type ReactNode, useState } from 'react';
 import { api } from '@/lib/api';
-import { brl, pct, thisPeriod } from '@/lib/format';
+import { brl, isoToMonthBr, maskMonthBr, monthBrToIso, pct, thisPeriod } from '@/lib/format';
 import { useApp } from '@/lib/store';
 import { Card, Note } from '@/components/ui';
 import { FieldInput, type FieldSpec, type FieldValue } from '@/components/fields';
@@ -18,12 +18,13 @@ export function GenerateRow({ label, path, schoolId, emptyMessage, created, onDo
 }) {
   const { notify, run } = useDialogs();
   const [period, setPeriod] = useState(thisPeriod());
+  const [periodText, setPeriodText] = useState(isoToMonthBr(thisPeriod()));
   return (
     <div className="add">
-      <label>Competência <input type="month" value={period} onChange={(e) => setPeriod(e.target.value)} aria-label="Competência" /></label>
-      <button type="button" onClick={() => run(async () => {
+      <label>Competência <input inputMode="numeric" placeholder="mm/aaaa" maxLength={7} value={periodText} onChange={(e) => { const t = maskMonthBr(e.target.value); setPeriodText(t); const iso = monthBrToIso(t); if (iso) setPeriod(iso); }} aria-label="Competência" aria-invalid={!monthBrToIso(periodText) || undefined} /></label>
+      <button type="button" disabled={!monthBrToIso(periodText)} onClick={() => run(async () => {
         const r = await api.post<{ created: number }>(path, { school_id: schoolId, period });
-        notify(r.created ? created(r.created, period) : emptyMessage);
+        notify(r.created ? created(r.created, isoToMonthBr(period)) : emptyMessage);
         onDone();
       })}>{label}</button>
     </div>

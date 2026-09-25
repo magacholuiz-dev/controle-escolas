@@ -4,7 +4,7 @@ import type { Child, Employee, Revenue } from '@controle-escolas/contracts';
 import { EditableTable } from '@/components/editable-table';
 import { ExportButton } from '@/components/export-button';
 import { CATEGORY_OPTIONS } from '@/lib/messages';
-import { MONTHS, thisPeriod, today } from '@/lib/format';
+import { isoToMonthBr, MONTHS, thisPeriod, today } from '@/lib/format';
 import { useApp, useTargetSchool } from '@/lib/store';
 import { useFetch } from '@/lib/useFetch';
 import { Kpi, Note, Warning } from '@/components/ui';
@@ -36,7 +36,7 @@ export function EmployeesScreen() {
   return (
     <>
       <Note>Equipe de <B>{school.name}</B>. Cadastre cada colaborador com a data de admissão para calcular a rescisão de cada um. Encargos, 13º e férias saem do salário (percentuais em Parâmetros). Benefícios (VT/VA) entram só na folha mensal. &quot;Férias já gozadas&quot; é o número de períodos aquisitivos completos que o colaborador já tirou.</Note>
-      <div className="add"><ExportButton label={`Exportar folha de ${thisPeriod()} (CSV)`} path={`export/payroll?school_id=${school.id}&period=${thisPeriod()}`} /></div>
+      <div className="add"><ExportButton label={`Exportar folha de ${isoToMonthBr(thisPeriod())} (CSV)`} path={`export/payroll?school_id=${school.id}&period=${thisPeriod()}`} /></div>
       <EditableTable resource="employees" query={`school_id=${school.id}`} extra={{ school_id: school.id }} defaults={{ active: 1, benefits: 0, vacation_periods_taken: 0 }} totalKey="salary" refreshKey={refresh} fields={[
         { key: 'name', label: 'Nome', type: 'text' },
         { key: 'cpf', label: 'CPF', type: 'text' },

@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import type { AppUser, AuditEntry, BankTransaction, Bill, OfxImportResult, School, Tuition } from '@controle-escolas/contracts';
 import { api } from '@/lib/api';
-import { brl, tone } from '@/lib/format';
+import { brl, isoToMonthBr, tone } from '@/lib/format';
 import { auditActionLabel, auditDetail } from '@/lib/audit';
 import { useApp, useTargetSchool } from '@/lib/store';
 import { useFetch } from '@/lib/useFetch';
@@ -30,7 +30,7 @@ export function BankScreen() {
     if (!t.suggested_kind) return '—';
     if (t.suggested_kind === 'bill') { const b = billById.get(t.suggested_id ?? ''); return b ? `Conta: ${b.description}` : 'Conta (removida)'; }
     const c = tuitionById.get(t.suggested_id ?? '');
-    return c ? `Mensalidade: ${c.period}` : 'Mensalidade (removida)';
+    return c ? `Mensalidade: ${isoToMonthBr(c.period)}` : 'Mensalidade (removida)';
   };
 
   const importFile = () => run(async () => {
@@ -59,7 +59,7 @@ export function BankScreen() {
       </div>
       <Card title="Movimentos importados" sub={list.data.length ? '' : 'Nenhum movimento importado ainda.'}>
         <TableWrap>
-          <thead><tr><th>Data</th><th>Descrição</th><th>Valor</th><th>Sugestão</th><th>Status</th><th /></tr></thead>
+          <thead><tr><th>Data</th><th>Descrição</th><th>Valor</th><th>Sugestão</th><th>Situação</th><th /></tr></thead>
           <tbody>
             {list.data.map((tx) => (
               <tr key={tx.id}>
