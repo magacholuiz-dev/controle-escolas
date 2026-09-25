@@ -95,4 +95,5 @@ creates every director from the "Usuários" tab; there's no self-registration.
 
 - [Development process (Loop Engineering)](docs/LOOP_PROCESS.md)
 - [Roadmap and specs per loop](docs/ROADMAP.md)
+- [Migration plan: TypeScript + NestJS + Next.js](docs/MIGRATION_PLAN.md)
 - [Market benchmark](docs/BENCHMARK.md)
