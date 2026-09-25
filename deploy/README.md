@@ -14,8 +14,16 @@ registrado para a próxima vez que precisar refazer (novo domínio, outro drople
 
 Sem domínio próprio ainda, a API usa um hostname temporário via [nip.io](https://nip.io) (resolve
 para o IP do droplet sem precisar comprar nada): `https://api-escolas.157-230-2-150.nip.io`. Troque
-por um domínio de verdade quando tiver um — é só repetir o passo 3 com o novo nome e atualizar
-`API_BASE_URL` na Vercel.
+por um domínio de verdade quando tiver um — é só repetir o passo 3 com o novo nome e atualizar o
+`dest` da rota em `vercel.json` (passo 4).
+
+**Importante (bug real corrigido em 2026-09-25):** o navegador do usuário NUNCA fala direto com a
+API — a Vercel faz proxy de `/api/*` pra ela (rota em `vercel.json`), então tudo parece vir de
+`controle-escolas.vercel.app`. Sem isso, o cookie de sessão é de terceiros (front e API em domínios
+diferentes) e navegadores com bloqueio de cookie de terceiros mais estrito (Safari por padrão, e
+cada vez mais o Chrome) simplesmente descartam o cookie — a pessoa loga, a tela pisca e ela cai de
+volta pro login, porque toda chamada seguinte chega sem sessão. Testar só num Chrome de
+desenvolvimento não pega isso.
 
 ## 1. Segredos do GitHub (uma vez, no repo `luizmagacho/controle-escolas`)
 
@@ -61,25 +69,26 @@ Na UI do NPM (porta 81 do droplet):
 ```bash
 cd controle-escolas
 vercel link      # associa esta pasta a um projeto Vercel (cria um novo se pedir)
-vercel env add API_BASE_URL production   # cole: https://api-escolas.157-230-2-150.nip.io
 vercel --prod
 ```
 
-O `buildCommand` do `vercel.json` (`node scripts/build-vercel-config.js`) escreve essa URL em
-`public/config.js` no momento do build — nada disso afeta o dev local nem o droplet servindo a si
-mesmo (lá, `config.js` continua com `''`, ou seja, mesma origem).
-
-A API já aceita automaticamente qualquer origem `https://*.vercel.app` (então funciona sem
-configurar nada extra), incluindo os deploys de preview.
+`vercel.json` já tem a rota que faz proxy de `/api/*` pra API do droplet — o navegador só fala com
+`controle-escolas.vercel.app`, nunca direto com o `nip.io`, então o cookie de sessão é sempre de
+primeira parte. `public/config.js` fica com `window.__API_BASE__ = ''` sempre (mesma origem) — não
+precisa de variável de ambiente nenhuma na Vercel pra isso. (Existe um mecanismo em
+`scripts/build-vercel-config.js`/`API_BASE_URL` pra apontar direto pra API sem proxy, mas **não
+use** — foi o que causava o bug de logout automático.)
 
 ## 5. Confirmar
 
 ```bash
-curl -I https://api-escolas.157-230-2-150.nip.io/api/schools   # 401 esperado (sem sessão) — prova que respondeu
-curl -H "Origin: https://controle-escolas.vercel.app" -I https://api-escolas.157-230-2-150.nip.io/api/schools
+curl -I https://controle-escolas.vercel.app/api/schools   # 401 esperado (sem sessão) — prova que o proxy respondeu
+curl -sD - -o /dev/null -X POST https://controle-escolas.vercel.app/api/auth/login \
+  -H 'Content-Type: application/json' -d '{"email":"...","password":"..."}'   # confira o Set-Cookie
 ```
 
-Depois, abrir a URL da Vercel, logar com o e-mail/senha do `.env` acima, e trocar a senha pelo app
+Depois, abrir a URL da Vercel, logar com o e-mail/senha do `.env` acima, recarregar a página e
+confirmar que continua logado (esse é o teste que realmente importa), e trocar a senha pelo app
 (aba "Usuários").
 
 ## Pendências conhecidas
