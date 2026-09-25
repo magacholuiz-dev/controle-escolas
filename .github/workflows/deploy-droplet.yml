@@ -28,14 +28,16 @@ jobs:
         with:
           node-version: 23
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Install dependencies (workspace root + legacy app)
+        run: |
+          npm ci
+          npm ci --prefix legacy
 
-      - name: Pure-logic tests (no database)
-        run: npm test
+      - name: Legacy pure-logic tests (no database)
+        run: npm test --prefix legacy
 
-      - name: API tests (against the service Mongo)
-        run: npm run test:api
+      - name: HTTP contract tests against the legacy API
+        run: npm run test:contract:legacy
         env:
           MONGO_TEST_HOST: mongodb://127.0.0.1:27017
 
@@ -60,8 +62,8 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./Dockerfile
+          context: ./legacy
+          file: ./legacy/Dockerfile
           push: true
           tags: ghcr.io/${{ github.repository }}:latest
 

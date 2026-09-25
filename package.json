@@ -1,22 +1,23 @@
 {
-  "name": "controle-escolas",
-  "version": "1.0.0",
-  "description": "Financial management for preschools (contract with the Curitiba city hall)",
-  "type": "module",
+  "name": "controle-escolas-monorepo",
+  "private": true,
+  "version": "2.0.0",
+  "description": "Financial control for two preschools — TypeScript monorepo (NestJS API, Next.js web, shared domain)",
+  "workspaces": ["packages/*", "apps/*"],
   "scripts": {
     "db": "docker compose up -d",
     "db:down": "docker compose down",
-    "start": "node --env-file-if-exists=.env server.js",
-    "test": "node test.js && node test-severance.js && node test-proration.js && node test-bills.js && node test-children.js && node test-tuition.js && node test-statement.js && node test-metrics.js && node test-scenarios.js && node test-alerts.js && node test-export.js && node test-ofx.js && node test-reconciliation.js && node test-auth.js && node test-installments.js",
-    "demo": "MONGODB_URI=mongodb://127.0.0.1:27019/controle-escolas-demo node seed-demo.js && MONGODB_URI=mongodb://127.0.0.1:27019/controle-escolas-demo SEED_OWNER_EMAIL=dona@demo.local SEED_OWNER_PASSWORD=demo-password-123 node server.js",
-    "test:api": "node --test \"test/api/*.test.js\"",
-    "backup": "sh scripts/backup.sh",
-    "vercel-build": "node scripts/build-vercel-config.js"
+    "test:contract": "node --test \"contract/*.test.js\"",
+    "test:contract:legacy": "API_CMD=\"node legacy/server.js\" node --test \"contract/*.test.js\"",
+    "test:contract:api": "API_CMD=\"node apps/api/dist/main.js\" node --test \"contract/*.test.js\"",
+    "build": "npm run build -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "test": "npm run test -ws --if-present",
+    "golden": "node contract/golden/generate.mjs"
   },
-  "engines": {
-    "node": ">=23.4"
+  "devDependencies": {
+    "mongoose": "^9.4.1",
+    "typescript": "^5.7.3"
   },
-  "dependencies": {
-    "mongoose": "^9.4.1"
-  }
+  "engines": { "node": ">=23.4" }
 }
