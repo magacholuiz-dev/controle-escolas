@@ -5,25 +5,26 @@ export const APP_SUBTITLE = 'Escolas infantis · contrato Prefeitura de Curitiba
 export const CATEGORIES = ['Alimentação', 'Aluguel', 'Água', 'Luz', 'Internet', 'Segurança', 'Material de cozinha', 'Material de limpeza', 'Material pedagógico', 'Manutenção', 'Contabilidade', 'Rescisão', 'Outros'];
 export const CATEGORY_OPTIONS: [string, string][] = CATEGORIES.map((c) => [c, c]);
 
-export interface NavItem { href: string; label: string; ownerOnly?: boolean; allSchools?: boolean }
-// One route per legacy tab. `allSchools`: the screen has a meaningful consolidated view.
+export const NAV_GROUPS = ['Visão geral', 'Receitas', 'Despesas', 'Contabilidade', 'Sistema'] as const;
+export interface NavItem { href: string; group: (typeof NAV_GROUPS)[number]; label: string; ownerOnly?: boolean; allSchools?: boolean }
+// One route per legacy tab, grouped by task in the sidebar. `allSchools`: the screen has a meaningful consolidated view.
 export const NAV: NavItem[] = [
-  { href: '/painel', label: 'Painel', allSchools: true },
-  { href: '/receitas', label: 'Receitas' },
-  { href: '/criancas', label: 'Crianças' },
-  { href: '/mensalidades', label: 'Mensalidades' },
-  { href: '/equipe', label: 'Equipe' },
-  { href: '/despesas', label: 'Despesas' },
-  { href: '/contas', label: 'Contas a pagar' },
-  { href: '/fornecedores', label: 'Fornecedores' },
-  { href: '/calendario', label: 'Calendário de repasse' },
-  { href: '/lancamentos', label: 'Lançamentos reais' },
-  { href: '/dre', label: 'DRE', allSchools: true },
-  { href: '/indicadores', label: 'Indicadores', allSchools: true },
-  { href: '/cenarios', label: 'Cenários' },
-  { href: '/conciliacao', label: 'Conciliação bancária' },
-  { href: '/parametros', label: 'Parâmetros' },
-  { href: '/usuarios', label: 'Usuários', ownerOnly: true },
+  { href: '/painel', group: 'Visão geral', label: 'Painel', allSchools: true },
+  { href: '/receitas', group: 'Receitas', label: 'Receitas' },
+  { href: '/criancas', group: 'Receitas', label: 'Crianças' },
+  { href: '/mensalidades', group: 'Receitas', label: 'Mensalidades' },
+  { href: '/equipe', group: 'Despesas', label: 'Equipe' },
+  { href: '/despesas', group: 'Despesas', label: 'Despesas' },
+  { href: '/contas', group: 'Despesas', label: 'Contas a pagar' },
+  { href: '/fornecedores', group: 'Despesas', label: 'Fornecedores' },
+  { href: '/calendario', group: 'Sistema', label: 'Calendário de repasse' },
+  { href: '/lancamentos', group: 'Contabilidade', label: 'Lançamentos reais' },
+  { href: '/dre', group: 'Contabilidade', label: 'DRE', allSchools: true },
+  { href: '/indicadores', group: 'Visão geral', label: 'Indicadores', allSchools: true },
+  { href: '/cenarios', group: 'Visão geral', label: 'Cenários' },
+  { href: '/conciliacao', group: 'Contabilidade', label: 'Conciliação bancária' },
+  { href: '/parametros', group: 'Sistema', label: 'Parâmetros' },
+  { href: '/usuarios', group: 'Sistema', label: 'Usuários', ownerOnly: true },
 ];
 
 export const BILL_STATUS: Record<string, [string, string]> = { pending: ['Pendente', ''], overdue: ['Vencida', 'neg'], paid: ['Paga', 'pos'] };

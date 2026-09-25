@@ -242,10 +242,13 @@ test('mobile: no horizontal page scroll on the busiest screens', async ({ page }
   await page.setViewportSize({ width: 375, height: 812 });
   await login(page);
   for (const label of ['Painel', 'Contas a pagar', 'Equipe', 'Conciliação bancária']) {
+    await page.getByRole('button', { name: 'Abrir menu' }).click(); // on phones the navigation is a drawer
     await page.getByRole('navigation').getByRole('link', { name: label, exact: true }).click();
     await page.waitForLoadState('networkidle');
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow, `${label} overflows by ${overflow}px`).toBeLessThanOrEqual(0);
+    await expect(page.getByRole('navigation')).not.toBeInViewport(); // the drawer closes after choosing
+    await expect(page.locator('.tabbar')).toBeVisible();
   }
 });
 
@@ -255,6 +258,6 @@ test('both color schemes render the dashboard', async ({ page }) => {
     await page.emulateMedia({ colorScheme: scheme });
     await expect(page.locator('.hero')).toBeVisible();
     const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-    expect(bg).toBe(scheme === 'light' ? 'rgb(249, 249, 247)' : 'rgb(13, 13, 13)');
+    expect(bg).toBe(scheme === 'light' ? 'rgb(245, 242, 234)' : 'rgb(15, 21, 18)');
   }
 });

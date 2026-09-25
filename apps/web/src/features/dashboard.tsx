@@ -53,6 +53,7 @@ export function DashboardScreen() {
   const occupancy = useFetch<Occupancy>(school === 'all' ? null : `children/occupancy?school_id=${school}`);
   const due = useFetch<BillsPanel>(`bills/panel?school=${school}&days=7`);
   const delinquency = useFetch<TuitionPanel>(`tuition/panel?school=${school}`);
+  const [showAllAlerts, setShowAllAlerts] = useState(false);
 
   if (report.error) return <ErrorNote message={report.error} />;
   const r = report.data;
@@ -65,14 +66,6 @@ export function DashboardScreen() {
 
   return (
     <>
-      <Card title="Alertas" sub={alerts.length ? `${alerts.length} coisa(s) para olhar` : 'Nenhum alerta agora.'}>
-        {alerts.map((a, i) => (
-          <div key={i} className="warning" style={{ marginTop: 10, ...(a.level === 'critical' ? { borderLeft: '3px solid var(--neg)' } : {}) }}>
-            <b>{a.title}</b>{school === 'all' ? ` · ${a.school}` : ''}<p style={{ margin: '4px 0 0' }}>{a.detail}</p>
-          </div>
-        ))}
-      </Card>
-
       <div className="top">
         <div className="card hero">
           <div className="label">Lucro do ano {year} (competência, já descontadas as provisões)</div>
@@ -102,6 +95,15 @@ export function DashboardScreen() {
             sub={occupancy.data.pct != null ? `${pct(occupancy.data.pct)} das vagas` : 'crianças matriculadas'} />
         )}
       </div>
+
+      <Card title="Alertas" sub={alerts.length ? `${alerts.length} coisa(s) para olhar` : 'Nenhum alerta agora.'}>
+        {(showAllAlerts ? alerts : alerts.slice(0, 4)).map((a, i) => (
+          <div key={i} className="warning" style={{ marginTop: 10, ...(a.level === 'critical' ? { borderLeft: '3px solid var(--neg)' } : {}) }}>
+            <b>{a.title}</b>{school === 'all' ? ` · ${a.school}` : ''}<p style={{ margin: '4px 0 0' }}>{a.detail}</p>
+          </div>
+        ))}
+        {alerts.length > 4 && <button type="button" className="sec" style={{ marginTop: 12, color: 'var(--ink)' }} onClick={() => setShowAllAlerts(!showAllAlerts)}>{showAllAlerts ? 'Mostrar menos' : `Ver todos (${alerts.length})`}</button>}
+      </Card>
 
       {due.data && (due.data.overdue.length > 0 || due.data.upcoming.length > 0) && (
         <Card title="Contas a pagar" sub="Vencidas e o que vence nos próximos 7 dias">
