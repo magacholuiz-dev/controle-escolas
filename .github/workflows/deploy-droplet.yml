@@ -28,16 +28,24 @@ jobs:
         with:
           node-version: 23
 
-      - name: Install dependencies (workspace root + legacy app)
+      - name: Install dependencies (workspace root + legacy app, kept for the parity suite)
         run: |
           npm ci
           npm ci --prefix legacy
 
-      - name: Legacy pure-logic tests (no database)
-        run: npm test --prefix legacy
+      - name: Build (domain, api, web)
+        run: npm run build
 
-      - name: HTTP contract tests against the legacy API
-        run: npm run test:contract:legacy
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests (domain golden, api, route access probe, web)
+        run: npm test
+        env:
+          MONGO_TEST_HOST: mongodb://127.0.0.1:27017
+
+      - name: HTTP contract tests, index parity and parallel run against the Nest API
+        run: npm run test:contract:api
         env:
           MONGO_TEST_HOST: mongodb://127.0.0.1:27017
 
@@ -62,10 +70,12 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: ./legacy
-          file: ./legacy/Dockerfile
+          context: .
+          file: ./Dockerfile.api
           push: true
-          tags: ghcr.io/${{ github.repository }}:latest
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
 
   deploy:
     needs: build-and-push
