@@ -11,3 +11,6 @@ dist
 .next
 coverage
 *.tsbuildinfo
+.next-e2e
+test-results
+playwright-report

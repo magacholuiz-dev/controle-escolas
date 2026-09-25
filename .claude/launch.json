@@ -2,10 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "controle-escolas-demo",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "demo"],
+      "name": "controle-escolas-api",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "MONGODB_URI=mongodb://127.0.0.1:27019/controle-escolas-demo SEED_OWNER_EMAIL=dona@demo.local SEED_OWNER_PASSWORD=demo-password-123 PORT=3200 node apps/api/dist/main.js"],
       "port": 3200
+    },
+    {
+      "name": "controle-escolas-web",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "cd apps/web && API_URL=http://127.0.0.1:3200 npx next start -p 3000"],
+      "port": 3000
     }
   ]
 }

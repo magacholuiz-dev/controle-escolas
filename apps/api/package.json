@@ -7,7 +7,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node --env-file-if-exists=.env dist/main.js",
     "start:dev": "tsc -p tsconfig.build.json --watch",
-    "test": "jest"
+    "test": "jest && node --test test/routes.test.mjs",
+    "test:routes": "node --test test/routes.test.mjs"
   },
   "dependencies": {
     "@controle-escolas/domain": "*",
@@ -29,10 +30,21 @@
     "ts-jest": "^29.2.5"
   },
   "jest": {
-    "moduleFileExtensions": ["js", "json", "ts"],
+    "moduleFileExtensions": [
+      "js",
+      "json",
+      "ts"
+    ],
     "rootDir": ".",
     "testRegex": "test/.*\\.spec\\.ts$",
-    "transform": { "^.+\\.ts$": ["ts-jest", { "tsconfig": "tsconfig.json" }] },
+    "transform": {
+      "^.+\\.ts$": [
+        "ts-jest",
+        {
+          "tsconfig": "tsconfig.json"
+        }
+      ]
+    },
     "testEnvironment": "node"
   }
 }

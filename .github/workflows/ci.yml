@@ -33,3 +33,9 @@ jobs:
         run: npm run test:contract:legacy
       - name: Contract tests, index parity and parallel run against the Nest API
         run: npm run test:contract:api
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - name: End-to-end tests (Next front + Nest API + real Mongo)
+        run: npm run e2e
+        working-directory: apps/web
