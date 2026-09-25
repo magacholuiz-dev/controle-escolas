@@ -97,6 +97,40 @@ const schoolName = () => state.schools.find((e) => e.id === targetSchool()).name
 const CATEGORIES = ['Alimentação', 'Aluguel', 'Água', 'Luz', 'Internet', 'Segurança', 'Material de cozinha', 'Material de limpeza', 'Material pedagógico', 'Manutenção', 'Contabilidade', 'Rescisão', 'Outros'];
 const CATEGORY_OPTIONS = CATEGORIES.map((c) => [c, c]);
 
+// Log de atividade (aba Usuários): traduz a ação e formata antes/depois de um jeito legível.
+const AUDIT_ACTION_LABELS = {
+  'employees.create': 'Cadastrou colaborador', 'employees.update': 'Editou colaborador', 'employees.delete': 'Excluiu colaborador',
+  'revenues.create': 'Cadastrou receita', 'revenues.update': 'Editou receita', 'revenues.delete': 'Excluiu receita',
+  'expenses.create': 'Cadastrou despesa', 'expenses.update': 'Editou despesa', 'expenses.delete': 'Excluiu despesa',
+  'entries.create': 'Lançou um registro', 'entries.update': 'Editou um lançamento', 'entries.delete': 'Excluiu um lançamento',
+  'schools.create': 'Cadastrou escola', 'schools.update': 'Editou parâmetros da escola',
+  'children.create': 'Cadastrou criança', 'children.update': 'Editou criança', 'children.delete': 'Excluiu criança',
+  'tuition.create': 'Cadastrou mensalidade', 'tuition.update': 'Editou mensalidade', 'tuition.delete': 'Excluiu mensalidade',
+  'suppliers.create': 'Cadastrou fornecedor', 'suppliers.update': 'Editou fornecedor', 'suppliers.delete': 'Excluiu fornecedor',
+  'scenarios.create': 'Salvou cenário', 'scenarios.delete': 'Excluiu cenário',
+  'bills.create': 'Cadastrou conta a pagar', 'bills.update': 'Editou conta a pagar', 'bills.delete': 'Excluiu conta a pagar',
+  'bill.pay': 'Pagou uma conta', 'bill.undo_pay': 'Desfez o pagamento de uma conta',
+  'tuition.pay': 'Pagou uma mensalidade', 'tuition.undo_pay': 'Desfez o pagamento de uma mensalidade',
+  'bank.confirm': 'Confirmou uma conciliação bancária', 'bank.manual_entry': 'Lançou um movimento bancário manualmente',
+  'severance.apply': 'Aplicou uma rescisão', 'user.create': 'Criou um usuário', 'user.update': 'Editou um usuário', 'user.delete': 'Excluiu um usuário',
+};
+const auditActionLabel = (action) => AUDIT_ACTION_LABELS[action] || action;
+const AUDIT_FIELD_LABELS = {
+  name: 'nome', description: 'descrição', amount: 'valor', monthly_amount: 'valor mensal', salary: 'salário', role: 'cargo',
+  category: 'categoria', base_amount: 'valor base', discount: 'desconto', period: 'competência', kind: 'tipo', target_id: 'id',
+  amount_paid: 'valor pago', paid_at: 'data do pagamento', group_id: 'grupo', group_removed: 'itens removidos do grupo', school_ids: 'escolas',
+};
+const auditFieldValue = (v) => (typeof v === 'number' ? (Number.isInteger(v) ? v : brl(v)) : v ?? '—');
+const auditObj = (o) => Object.entries(o || {}).map(([k, v]) => `${AUDIT_FIELD_LABELS[k] || k}: ${auditFieldValue(v)}`).join(', ');
+function auditDetail(before, after) {
+  const hasBefore = before && Object.keys(before).length;
+  const hasAfter = after && Object.keys(after).length;
+  if (hasBefore && hasAfter) return `${auditObj(before)} → ${auditObj(after)}`;
+  if (hasAfter) return auditObj(after);
+  if (hasBefore) return auditObj(before);
+  return '—';
+}
+
 // Form to split an expense/entry between the schools (proration).
 function renderSplitForm(root, resource, { defaults = {}, fields }) {
   const [school1, school2] = state.schools;
@@ -753,11 +787,12 @@ const views = {
     if (auditLog.length) {
       const auditWrap = document.createElement('div'); auditWrap.className = 'table-wrap';
       const at = document.createElement('table');
-      at.innerHTML = `<tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Antes</th><th>Depois</th></tr>${auditLog.slice(0, 100).map((a) => `
-        <tr><td>${new Date(a.at).toLocaleString('pt-BR')}</td><td>${a.user_email}</td><td>${a.action}</td>
-        <td>${a.before ? JSON.stringify(a.before) : '—'}</td><td>${a.after ? JSON.stringify(a.after) : '—'}</td></tr>`).join('')}`;
+      const schoolName = (id) => (id ? state.schools.find((s) => s.id === id)?.name || id : '—');
+      at.innerHTML = `<tr><th>Quando</th><th>Quem</th><th>Ação</th><th>Escola</th><th>Detalhe</th></tr>${auditLog.slice(0, 100).map((a) => `
+        <tr><td>${new Date(a.at).toLocaleString('pt-BR')}</td><td>${a.user_email}</td><td>${auditActionLabel(a.action)}</td>
+        <td>${schoolName(a.school_id)}</td><td>${auditDetail(a.before, a.after)}</td></tr>`).join('')}`;
       auditWrap.append(at);
-      root.append(card('Auditoria (últimas 100)', '', null, auditWrap));
+      root.append(card('Log de atividade (últimas 100)', 'O que cada usuário fez, mais recente primeiro', null, auditWrap));
     }
   },
 

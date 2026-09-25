@@ -55,8 +55,8 @@ test('AC3: changing a salary and applying a severance write an audit entry with 
   const emp = await api.req('POST', '/api/employees', { school_id: novoMundo.id, name: 'Carlos', role: 'Porteiro', salary: 2000, hire_date: '2024-01-10' });
   await api.req('PUT', `/api/employees/${emp.body.id}`, { salary: 2500 });
   const auditAfterSalary = await api.req('GET', `/api/audit?entity_id=${emp.body.id}`);
-  const salaryEntry = auditAfterSalary.body.find((a) => a.action === 'employee.update');
-  assert.ok(salaryEntry, 'expected an employee.update audit entry');
+  const salaryEntry = auditAfterSalary.body.find((a) => a.action === 'employees.update');
+  assert.ok(salaryEntry, 'expected an employees.update audit entry');
   assert.equal(salaryEntry.before.salary, 2000);
   assert.equal(salaryEntry.after.salary, 2500);
 
@@ -101,4 +101,23 @@ test('AC7: logging out invalidates the session', async () => {
   await api.req('POST', '/api/auth/logout', undefined, { cookie });
   const afterLogout = await api.req('GET', '/api/auth/me', undefined, { cookie });
   assert.equal(afterLogout.status, 401);
+});
+
+test('AC8: adding a cost (expense) is logged with who and what', async () => {
+  const created = await api.req('POST', '/api/expenses', { school_id: novoMundo.id, description: 'Material de limpeza extra', category: 'Material de limpeza', monthly_amount: 300 });
+  const log = (await api.req('GET', `/api/audit?entity_id=${created.body.id}`)).body;
+  const entry = log.find((a) => a.action === 'expenses.create');
+  assert.ok(entry, 'expected an expenses.create audit entry');
+  assert.equal(entry.user_email, 'owner@test.local');
+  assert.equal(entry.after.description, 'Material de limpeza extra');
+  assert.equal(entry.after.monthly_amount, 300);
+});
+
+test('AC9: deleting an employee ("um professor") is logged with who and which one', async () => {
+  const created = await api.req('POST', '/api/employees', { school_id: novoMundo.id, name: 'Professora Joana', role: 'Professora' });
+  await api.req('DELETE', `/api/employees/${created.body.id}`);
+  const log = (await api.req('GET', `/api/audit?entity_id=${created.body.id}`)).body;
+  const entry = log.find((a) => a.action === 'employees.delete');
+  assert.ok(entry, 'expected an employees.delete audit entry');
+  assert.equal(entry.before.name, 'Professora Joana');
 });

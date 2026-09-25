@@ -88,6 +88,34 @@ async function audit(user, action, { entity = '', entity_id = null, school_id = 
   await AuditLog.create({ user_email: user.email, action, entity, entity_id, school_id, before, after });
 }
 
+// A short, human-readable snapshot of a document for the audit log — just enough to recognize
+// "which one" without dumping every field (or sensitive ones not meant for the log either).
+const AUDIT_SUMMARY_FIELDS = {
+  employees: ['name', 'role', 'salary'],
+  revenues: ['description', 'monthly_amount'],
+  expenses: ['description', 'monthly_amount'],
+  entries: ['description', 'amount', 'category'],
+  schools: ['name'],
+  children: ['name'],
+  tuition: ['base_amount', 'discount'],
+  suppliers: ['name'],
+  scenarios: ['name'],
+  bills: ['description', 'amount'],
+};
+function docSummary(resource, doc) {
+  const out = {};
+  for (const f of AUDIT_SUMMARY_FIELDS[resource] || []) if (doc[f] !== undefined) out[f] = doc[f];
+  return out;
+}
+// Only the fields that actually changed, so a log entry doesn't repeat every column on every edit.
+function changedFields(data, existing) {
+  const before = {}; const after = {};
+  for (const k of Object.keys(data)) {
+    if (JSON.stringify(data[k]) !== JSON.stringify(existing[k])) { before[k] = existing[k]; after[k] = data[k]; }
+  }
+  return { before, after, hasChanges: Object.keys(after).length > 0 };
+}
+
 async function listUsers() {
   const users = await User.find().select('-password_hash').sort('email').lean();
   return users.map(({ _id, school_ids, ...u }) => ({ ...u, id: String(_id), school_ids: (school_ids || []).map(String) }));
@@ -264,7 +292,7 @@ async function simulateScenario({ school_id, year, adjustments }) {
 }
 
 // Creates one expense/entry per school, with the amount split, linked by `group_id`.
-async function splitAmount({ resource, data, mode, percentages }) {
+async function splitAmount(user, { resource, data, mode, percentages }) {
   const resourceDef = RESOURCES[resource];
   if (!resourceDef || !['expenses', 'entries', 'bills'].includes(resource)) throw new InputError('só despesas, lançamentos e contas podem ser divididos');
   if (!data || typeof data !== 'object') throw new InputError('dados da divisão ausentes');
@@ -277,6 +305,7 @@ async function splitAmount({ resource, data, mode, percentages }) {
   const docs = await resourceDef.model.create(splits.filter((p) => p.amount > 0).map((p) => ({
     ...base, school_id: p.school_id, [amountField]: p.amount, group_id, total_amount: Number(data[amountField]), split_pct: p.pct,
   })));
+  for (const doc of docs) await audit(user, `${resource}.create`, { entity: resource, entity_id: doc._id, school_id: doc.school_id, after: { ...docSummary(resource, doc), group_id } });
   return { group_id, splits, ids: docs.map((d) => String(d._id)) };
 }
 
@@ -294,7 +323,7 @@ async function generateBills({ school_id, period }) {
   return { created: fresh.length };
 }
 
-async function payBill(id, { amount_paid, paid_at, payment_method }) {
+async function payBill(user, id, { amount_paid, paid_at, payment_method }) {
   const bill = await Bill.findById(id);
   if (!bill) throw new InputError('conta não encontrada', 404);
   if (bill.paid_at) throw new InputError('esta conta já está paga');
@@ -308,16 +337,19 @@ async function payBill(id, { amount_paid, paid_at, payment_method }) {
   });
   bill.paid_at = date; bill.amount_paid = amount; bill.payment_method = payment_method || '';
   await bill.save();
+  await audit(user, 'bill.pay', { entity: 'bills', entity_id: bill._id, school_id: bill.school_id, after: { description: bill.description, amount_paid: amount, paid_at: date } });
   return { ok: true, entry_id: String(entry._id) };
 }
 
-async function undoBillPayment(id) {
+async function undoBillPayment(user, id) {
   const bill = await Bill.findById(id);
   if (!bill) throw new InputError('conta não encontrada', 404);
   if (!bill.paid_at) throw new InputError('esta conta não está paga');
   await Entry.deleteOne({ bill_id: bill._id });
+  const before = { description: bill.description, amount_paid: bill.amount_paid, paid_at: bill.paid_at };
   bill.paid_at = null; bill.amount_paid = null; bill.payment_method = '';
   await bill.save();
+  await audit(user, 'bill.undo_pay', { entity: 'bills', entity_id: bill._id, school_id: bill.school_id, before });
   return { ok: true };
 }
 
@@ -347,7 +379,7 @@ async function generateTuition({ school_id, period }) {
   return { created: fresh.length };
 }
 
-async function payTuition(id, { amount_paid, paid_at, payment_method }) {
+async function payTuition(user, id, { amount_paid, paid_at, payment_method }) {
   const charge = await Tuition.findById(id);
   if (!charge) throw new InputError('mensalidade não encontrada', 404);
   if (charge.paid_at) throw new InputError('esta mensalidade já está paga');
@@ -361,16 +393,19 @@ async function payTuition(id, { amount_paid, paid_at, payment_method }) {
   });
   charge.paid_at = date; charge.amount_paid = amount; charge.payment_method = payment_method || '';
   await charge.save();
+  await audit(user, 'tuition.pay', { entity: 'tuition', entity_id: charge._id, school_id: charge.school_id, after: { period: charge.period, amount_paid: amount, paid_at: date } });
   return { ok: true, entry_id: String(entry._id) };
 }
 
-async function undoTuitionPayment(id) {
+async function undoTuitionPayment(user, id) {
   const charge = await Tuition.findById(id);
   if (!charge) throw new InputError('mensalidade não encontrada', 404);
   if (!charge.paid_at) throw new InputError('esta mensalidade não está paga');
   await Entry.deleteOne({ tuition_id: charge._id });
+  const before = { period: charge.period, amount_paid: charge.amount_paid, paid_at: charge.paid_at };
   charge.paid_at = null; charge.amount_paid = null; charge.payment_method = '';
   await charge.save();
+  await audit(user, 'tuition.undo_pay', { entity: 'tuition', entity_id: charge._id, school_id: charge.school_id, before });
   return { ok: true };
 }
 
@@ -469,7 +504,7 @@ async function listBankTransactions(schoolParam, allowedIds) {
 
 // Confirms a transaction against a bill or tuition charge (its suggestion, or a different one the
 // human picked), paying it for real, or clears the suggestion so it's treated as unmatched.
-async function confirmBankTransaction(id, { kind, target_id }, allowedIds) {
+async function confirmBankTransaction(user, id, { kind, target_id }, allowedIds) {
   const tx = await BankTransaction.findById(id);
   if (!tx) throw new InputError('transação não encontrada', 404);
   checkAllowed(allowedIds, tx.school_id);
@@ -481,14 +516,15 @@ async function confirmBankTransaction(id, { kind, target_id }, allowedIds) {
   requireId(useId, 'target_id');
   const paid_at = tx.date;
   const amount_paid = Math.abs(tx.amount);
-  const { entry_id } = useKind === 'bill' ? await payBill(useId, { amount_paid, paid_at }) : await payTuition(useId, { amount_paid, paid_at });
+  const { entry_id } = useKind === 'bill' ? await payBill(user, useId, { amount_paid, paid_at }) : await payTuition(user, useId, { amount_paid, paid_at });
   tx.reconciled = true; tx.entry_id = entry_id; tx.suggested_kind = useKind; tx.suggested_id = useId;
   await tx.save();
+  await audit(user, 'bank.confirm', { entity: 'bank', entity_id: tx._id, school_id: tx.school_id, after: { kind: useKind, target_id: useId, amount: tx.amount } });
   return { ok: true, entry_id: String(entry_id) };
 }
 
 // Posts a plain entry for a transaction that doesn't match any open bill/tuition charge.
-async function manualBankEntry(id, { category, description }, allowedIds) {
+async function manualBankEntry(user, id, { category, description }, allowedIds) {
   const tx = await BankTransaction.findById(id);
   if (!tx) throw new InputError('transação não encontrada', 404);
   checkAllowed(allowedIds, tx.school_id);
@@ -497,6 +533,7 @@ async function manualBankEntry(id, { category, description }, allowedIds) {
     school_id: tx.school_id, date: tx.date, type: tx.amount < 0 ? 'expense' : 'revenue',
     category: category || 'Outros', description: description || tx.name, amount: Math.abs(tx.amount), one_off: 0,
   });
+  await audit(user, 'bank.manual_entry', { entity: 'bank', entity_id: tx._id, school_id: tx.school_id, after: { category: entry.category, description: entry.description, amount: entry.amount } });
   tx.reconciled = true; tx.entry_id = entry._id;
   await tx.save();
   return { ok: true, entry_id: String(entry._id) };
@@ -629,16 +666,16 @@ async function api(req, res, url) {
   if (resource === 'bills' && (seg2 === 'generate' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
     if (seg2 === 'generate' && req.method === 'POST') { const body = await readBody(req); checkAllowed(allowedIds, requireId(body.school_id, 'school_id')); return json(res, 201, await generateBills(body)); }
     if (seg2 === 'panel' && req.method === 'GET') { const schoolParam = q.get('school') || 'all'; if (schoolParam !== 'all') checkAllowed(allowedIds, requireId(schoolParam, 'school')); return json(res, 200, await billsPanel(schoolParam, Number(q.get('days')) || 7, allowedIds)); }
-    if (seg3 === 'pay' && req.method === 'POST') { const bill = await Bill.findById(requireId(seg2)).select('school_id').lean(); if (!bill) return json(res, 404, { error: 'conta não encontrada' }); checkAllowed(allowedIds, bill.school_id); return json(res, 200, await payBill(seg2, await readBody(req))); }
-    if (seg3 === 'undo' && req.method === 'POST') { const bill = await Bill.findById(requireId(seg2)).select('school_id').lean(); if (!bill) return json(res, 404, { error: 'conta não encontrada' }); checkAllowed(allowedIds, bill.school_id); return json(res, 200, await undoBillPayment(seg2)); }
+    if (seg3 === 'pay' && req.method === 'POST') { const bill = await Bill.findById(requireId(seg2)).select('school_id').lean(); if (!bill) return json(res, 404, { error: 'conta não encontrada' }); checkAllowed(allowedIds, bill.school_id); return json(res, 200, await payBill(user, seg2, await readBody(req))); }
+    if (seg3 === 'undo' && req.method === 'POST') { const bill = await Bill.findById(requireId(seg2)).select('school_id').lean(); if (!bill) return json(res, 404, { error: 'conta não encontrada' }); checkAllowed(allowedIds, bill.school_id); return json(res, 200, await undoBillPayment(user, seg2)); }
     return json(res, 405, { error: 'método não suportado' });
   }
 
   if (resource === 'tuition' && (seg2 === 'generate' || seg2 === 'panel' || seg3 === 'pay' || seg3 === 'undo')) {
     if (seg2 === 'generate' && req.method === 'POST') { const body = await readBody(req); checkAllowed(allowedIds, requireId(body.school_id, 'school_id')); return json(res, 201, await generateTuition(body)); }
     if (seg2 === 'panel' && req.method === 'GET') { const schoolParam = q.get('school') || 'all'; if (schoolParam !== 'all') checkAllowed(allowedIds, requireId(schoolParam, 'school')); return json(res, 200, await tuitionPanel(schoolParam, allowedIds)); }
-    if (seg3 === 'pay' && req.method === 'POST') { const charge = await Tuition.findById(requireId(seg2)).select('school_id').lean(); if (!charge) return json(res, 404, { error: 'mensalidade não encontrada' }); checkAllowed(allowedIds, charge.school_id); return json(res, 200, await payTuition(seg2, await readBody(req))); }
-    if (seg3 === 'undo' && req.method === 'POST') { const charge = await Tuition.findById(requireId(seg2)).select('school_id').lean(); if (!charge) return json(res, 404, { error: 'mensalidade não encontrada' }); checkAllowed(allowedIds, charge.school_id); return json(res, 200, await undoTuitionPayment(seg2)); }
+    if (seg3 === 'pay' && req.method === 'POST') { const charge = await Tuition.findById(requireId(seg2)).select('school_id').lean(); if (!charge) return json(res, 404, { error: 'mensalidade não encontrada' }); checkAllowed(allowedIds, charge.school_id); return json(res, 200, await payTuition(user, seg2, await readBody(req))); }
+    if (seg3 === 'undo' && req.method === 'POST') { const charge = await Tuition.findById(requireId(seg2)).select('school_id').lean(); if (!charge) return json(res, 404, { error: 'mensalidade não encontrada' }); checkAllowed(allowedIds, charge.school_id); return json(res, 200, await undoTuitionPayment(user, seg2)); }
     return json(res, 405, { error: 'método não suportado' });
   }
 
@@ -662,8 +699,8 @@ async function api(req, res, url) {
   if (resource === 'bank') {
     if (seg2 === 'import' && req.method === 'POST') return json(res, 201, await importBankStatement(await readBody(req), allowedIds));
     if (seg2 === 'list' && req.method === 'GET') return json(res, 200, await listBankTransactions(q.get('school') || 'all', allowedIds));
-    if (seg3 === 'confirm' && req.method === 'POST') return json(res, 200, await confirmBankTransaction(requireId(seg2), await readBody(req), allowedIds));
-    if (seg3 === 'manual' && req.method === 'POST') return json(res, 200, await manualBankEntry(requireId(seg2), await readBody(req), allowedIds));
+    if (seg3 === 'confirm' && req.method === 'POST') return json(res, 200, await confirmBankTransaction(user, requireId(seg2), await readBody(req), allowedIds));
+    if (seg3 === 'manual' && req.method === 'POST') return json(res, 200, await manualBankEntry(user, requireId(seg2), await readBody(req), allowedIds));
     return json(res, 405, { error: 'método não suportado' });
   }
 
@@ -691,7 +728,7 @@ async function api(req, res, url) {
 
   if (resource === 'split' && req.method === 'POST') {
     if (user.role !== 'owner') throw new InputError('só a dona pode dividir uma compra entre as escolas', 403);
-    return json(res, 201, await splitAmount(await readBody(req)));
+    return json(res, 201, await splitAmount(user, await readBody(req)));
   }
 
   if (resource === 'severance') {
@@ -729,7 +766,7 @@ async function api(req, res, url) {
     if (scoped && data.school_id) checkAllowed(allowedIds, requireId(data.school_id, 'school_id'));
     await resourceDef.validate?.(data);
     const doc = await model.create(data);
-    if (resource === 'employees') await audit(user, 'employee.create', { entity: 'Employee', entity_id: doc._id, school_id: doc.school_id, after: { name: doc.name, salary: doc.salary } });
+    await audit(user, `${resource}.create`, { entity: resource, entity_id: doc._id, school_id: doc.school_id ?? (resource === 'schools' ? doc._id : null), after: docSummary(resource, doc) });
     return json(res, 201, { id: String(doc._id) });
   }
   if (req.method === 'PUT' && id) {
@@ -740,8 +777,9 @@ async function api(req, res, url) {
     if (scoped) { checkAllowed(allowedIds, existing.school_id); if (data.school_id) checkAllowed(allowedIds, requireId(data.school_id, 'school_id')); }
     await resourceDef.validate?.(data, existing);
     await model.updateOne({ _id: id }, { $set: data }, { runValidators: true });
-    if (resource === 'employees' && 'salary' in data && data.salary !== existing.salary) {
-      await audit(user, 'employee.update', { entity: 'Employee', entity_id: id, school_id: existing.school_id, before: { salary: existing.salary }, after: { salary: data.salary } });
+    const { before, after, hasChanges } = changedFields(data, existing);
+    if (hasChanges) {
+      await audit(user, `${resource}.update`, { entity: resource, entity_id: id, school_id: existing.school_id ?? (resource === 'schools' ? id : null), before, after });
     }
     return json(res, 200, { ok: true });
   }
@@ -750,9 +788,14 @@ async function api(req, res, url) {
     const doc = await model.findById(id);
     if (!doc) return json(res, 404, { error: 'não encontrado' });
     if (scoped) checkAllowed(allowedIds, doc.school_id);
-    if (q.get('group') && doc.group_id) return json(res, 200, { ok: true, removed: (await model.deleteMany({ group_id: doc.group_id })).deletedCount });
+    if (q.get('group') && doc.group_id) {
+      const removed = await model.deleteMany({ group_id: doc.group_id });
+      await audit(user, `${resource}.delete`, { entity: resource, entity_id: doc._id, school_id: doc.school_id, before: { ...docSummary(resource, doc), group_id: doc.group_id, group_removed: removed.deletedCount } });
+      return json(res, 200, { ok: true, removed: removed.deletedCount });
+    }
     const removedDoc = await model.findOneAndDelete({ _id: id });
     if (!removedDoc) return json(res, 404, { error: 'não encontrado' });
+    await audit(user, `${resource}.delete`, { entity: resource, entity_id: id, school_id: removedDoc.school_id, before: docSummary(resource, removedDoc) });
     return json(res, 200, { ok: true });
   }
   json(res, 405, { error: 'método não suportado' });
