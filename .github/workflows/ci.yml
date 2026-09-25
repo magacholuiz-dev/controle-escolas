@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+jobs:
+  monorepo:
+    runs-on: ubuntu-latest
+    services:
+      mongo:
+        image: mongo:7
+        ports: ['27017:27017']
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok'"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      MONGO_TEST_HOST: mongodb://127.0.0.1:27017
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 23 }
+      - run: npm ci
+      - run: npm ci --prefix legacy
+      - name: Build (domain, api, web)
+        run: npm run build
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Unit tests (domain golden + ported tests, api, web)
+        run: npm test
+      - name: Contract tests against the legacy API
+        run: npm run test:contract:legacy
+      - name: Contract tests, index parity and parallel run against the Nest API
+        run: npm run test:contract:api

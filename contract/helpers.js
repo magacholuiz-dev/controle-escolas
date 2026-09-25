@@ -31,14 +31,14 @@ async function waitUntilUp(base, child, logs) {
   throw new Error(`API did not start in time:\n${logs.join('')}`);
 }
 
-export async function start() {
+export async function start({ cmd: cmdOverride } = {}) {
   // `node --test` runs files in parallel; random bytes guarantee a database unique to this call.
   const database = `controle-escolas-test-${process.pid}-${Date.now()}-${randomBytes(4).toString('hex')}`;
   const uri = `${MONGO_TEST_HOST}/${database}`;
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const logs = [];
-  const [cmd, ...args] = API_CMD.split(' ');
+  const [cmd, ...args] = (cmdOverride || API_CMD).split(' ');
   const child = spawn(cmd, args, {
     cwd: ROOT,
     env: {
@@ -72,7 +72,7 @@ export async function start() {
   const req = (method, path, body, opts = {}) => rawReq(method, path, body, { cookie: ownerCookie, ...opts });
 
   return {
-    req, loginAs, ownerCookie, base,
+    req, loginAs, ownerCookie, base, uri,
     async schools() { return (await req('GET', '/api/schools')).body; },
     async stop() {
       child.kill('SIGTERM');

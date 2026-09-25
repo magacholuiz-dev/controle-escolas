@@ -1,0 +1,22 @@
+# NestJS API image (built from the monorepo root): domain package first, then the API.
+FROM node:23-alpine AS build
+WORKDIR /repo
+COPY package.json package-lock.json tsconfig.base.json ./
+COPY packages/domain/package.json packages/domain/
+COPY apps/api/package.json apps/api/
+RUN npm ci --workspace packages/domain --workspace apps/api --include-workspace-root=false
+COPY packages/domain packages/domain
+COPY apps/api apps/api
+RUN npm run build -w packages/domain && npm run build -w apps/api
+
+FROM node:23-alpine
+WORKDIR /repo
+ENV NODE_ENV=production LISTEN_HOST=0.0.0.0 PORT=3200
+COPY package.json package-lock.json ./
+COPY packages/domain/package.json packages/domain/
+COPY apps/api/package.json apps/api/
+RUN npm ci --omit=dev --workspace packages/domain --workspace apps/api --include-workspace-root=false
+COPY --from=build /repo/packages/domain/dist packages/domain/dist
+COPY --from=build /repo/apps/api/dist apps/api/dist
+EXPOSE 3200
+CMD ["node", "apps/api/dist/main.js"]
